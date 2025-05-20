@@ -1,11 +1,11 @@
 from typing import Literal, Dict
-
+import numpy as np
 from segmentation_models_pytorch.unet import Unet
 
 import torch
 import torch.nn as nn
 from losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
-from unetr_base import ModelOutput, BASE_CFG
+from models.unetr_base import ModelOutput, BASE_CFG
 
 class UNet(nn.Module):
     def __init__(self, 
@@ -25,12 +25,21 @@ class UNet(nn.Module):
         if freeze_backbone:
             for param in self.model.encoder.parameters():
                 param.requires_grad = False
+
+    @property
+    def device(self):
+        """
+        Returns the device of the model parameters.
+        """
+        # Get the device of the first parameter in the model
+        return next(self.parameters()).device
+
     
-    def forward(self, x:torch.Tensor, y_true:torch.Tensor=None) -> ModelOutput:
-        x = self.head(self.model(x))
-        return ModelOutput(preds=x,
+    def forward(self, pixel_values:torch.Tensor, y_true:torch.Tensor=None) -> ModelOutput:
+        pixel_values = self.head(self.model(pixel_values))
+        return ModelOutput(preds=pixel_values,
                            logits=self.criterion.needs_logits,
-                           losses_dict=self.criterion(x, y_true) if y_true is not None else None,
+                           losses_dict=self.criterion(pixel_values, y_true) if y_true is not None else None,
                            loss_weights_dict=self.criterion.loss_weights)
 
 
@@ -50,7 +59,7 @@ def create_model(encoder_model:str,
                  **kwargs) -> UNet:
     
     config = BASE_CFG["_".join([encoder_model, "UNet"])]
-    config['num_classes'] = len(label2id)
+    config['num_classes'] = len(np.unique(list(label2id.values())))
     config['id2label'] = {v: k for k, v in label2id.items()}
     config['label2id'] = label2id
     config['backbone_name'] = encoder_model 
@@ -94,7 +103,7 @@ def custom_post_process_semantic_segmentation(outputs, target_sizes, return_logi
         A list of dictionaries containing the resized segmentation maps and logits.
     """
     if return_logits:
-        return outputs.logits
+        return outputs.preds
     else:
         return outputs.y_pred
     
@@ -112,7 +121,7 @@ def post_process_output(outputs, target_sizes, return_logits=False):
         torch.Tensor: The final segmentation mask.
     """
     outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
-    outputs = torch.stack(outputs).squeeze().cpu()
+    outputs = outputs.squeeze().cpu()
     while len(outputs.shape) < 4:
         outputs = outputs.unsqueeze(0)
     # unsqueeze_first = True if len(outputs.shape) < 4 else False

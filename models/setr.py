@@ -1,12 +1,12 @@
-
 from typing import Literal, Union, Dict
+import numpy as np
 
 from transformers import Dinov2Backbone
 import torch
 import torch.nn as nn
 from losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
-from unetr_base import BASE_CFG, get_embedding_combiner, ConvBlock, DeconvBlock, ModelOutput, ViTEncoder, foundation_backbones, facebook_backbones 
-from timm import create_model
+from models.unetr_base import BASE_CFG, get_embedding_combiner, ConvBlock, DeconvBlock, ModelOutput, ViTEncoder, foundation_backbones, facebook_backbones 
+from timm import create_model as timm_create_model
 
 class SETR(nn.Module):
     """
@@ -83,6 +83,15 @@ class SETR(nn.Module):
         if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
+    
+    @property
+    def device(self):
+        """
+        Returns the device of the model parameters.
+        """
+        # Get the device of the first parameter in the model
+        return next(self.parameters()).device
+
 
     def _get_criterion(self, criterion, loss_weights):
         if criterion == 'mask2former':
@@ -95,7 +104,7 @@ class SETR(nn.Module):
     def _get_backbone(self, backbone_name, **kwargs) -> Union[ViTEncoder, Dinov2Backbone]:
         if backbone_name in foundation_backbones:
             backbone = ViTEncoder(num_classes=0, **kwargs)
-            backbone.load_state_dict(create_model(kwargs['encoder_weights'], pretrained=True, mlp_layer=kwargs['mlp_layer'], act_layer=kwargs['act_layer'], out_indices=kwargs['feature_layers'], features_only=False).state_dict())
+            backbone.load_state_dict(timm_create_model(kwargs['encoder_weights'], pretrained=True, mlp_layer=kwargs['mlp_layer'], act_layer=kwargs['act_layer'], out_indices=kwargs['feature_layers'], features_only=False).state_dict())
         elif backbone_name in facebook_backbones:
             backbone = Dinov2Backbone.from_pretrained(kwargs['encoder_weights'], out_indices=kwargs['feature_layers'], label2id=kwargs['label2id'], id2label=kwargs['id2label'], num_labels=self.num_classes, ignore_mismatched_sizes=True)
             backbone.embed_dim = backbone.config.hidden_size
@@ -106,28 +115,28 @@ class SETR(nn.Module):
         return backbone
     
         
-    def forward(self, x: torch.Tensor, y_true:torch.Tensor=None) -> ModelOutput:
-        B, C, height, width = x.shape
+    def forward(self, pixel_values: torch.Tensor, y_true:torch.Tensor=None) -> ModelOutput:
+        B, C, height, width = pixel_values.shape
 
-        x = self.backbone(x).feature_maps[0]
-        x = self.embedding_combiner(x) # combine cls token and patch tokens
+        pixel_values = self.backbone(pixel_values).feature_maps[0]
+        pixel_values = self.embedding_combiner(pixel_values) # combine cls token and patch tokens
 
         # reshape to BCHW output format if not already in that format
-        if len(x.shape[2:]) < 2: 
+        if len(pixel_values.shape[2:]) < 2: 
             H, W = self.backbone.patch_embed.dynamic_feat_size((height, width))
-            x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+            pixel_values = pixel_values.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
-        x = self.decoder(x)
+        pixel_values = self.decoder(pixel_values)
         # check if matching height and width for concatenation. If not matching crop and then concatenate
-        if x.shape[2:] != (height, width):
-            diffY = height - x.shape[2]
-            diffX = width - x.shape[3]
-            x = nn.functional.pad(x, (diffX // 2, diffX - diffX//2, diffY // 2, diffY - diffY//2))
-        x = self.segmentation_head(x)
+        if pixel_values.shape[2:] != (height, width):
+            diffY = height - pixel_values.shape[2]
+            diffX = width - pixel_values.shape[3]
+            pixel_values = nn.functional.pad(pixel_values, (diffX // 2, diffX - diffX//2, diffY // 2, diffY - diffY//2))
+        pixel_values = self.segmentation_head(pixel_values)
 
-        return ModelOutput(preds=x,
+        return ModelOutput(preds=pixel_values,
                            logits=self.criterion.needs_logits,
-                           losses_dict=self.criterion(x, y_true) if y_true is not None else None,
+                           losses_dict=self.criterion(pixel_values, y_true) if y_true is not None else None,
                            loss_weights_dict=self.criterion.loss_weights)
 
 
@@ -138,7 +147,7 @@ def create_model(encoder_model:str,
                  **kwargs) -> SETR:
     
     config = BASE_CFG["_".join([encoder_model, "SETR"])]
-    config['num_classes'] = len(label2id)
+    config['num_classes'] = len(np.unique(list(label2id.values())))
     config['id2label'] = {v: k for k, v in label2id.items()}
     config['label2id'] = label2id
     config['backbone_name'] = encoder_model 
@@ -182,7 +191,7 @@ def custom_post_process_semantic_segmentation(outputs, target_sizes, return_logi
         A list of dictionaries containing the resized segmentation maps and logits.
     """
     if return_logits:
-        return outputs.logits
+        return outputs.preds
     else:
         return outputs.y_pred
     
@@ -200,7 +209,7 @@ def post_process_output(outputs, target_sizes, return_logits=False):
         torch.Tensor: The final segmentation mask.
     """
     outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
-    outputs = torch.stack(outputs).squeeze().cpu()
+    outputs = outputs.squeeze().cpu()
     while len(outputs.shape) < 4:
         outputs = outputs.unsqueeze(0)
     # unsqueeze_first = True if len(outputs.shape) < 4 else False
