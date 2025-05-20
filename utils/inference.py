@@ -16,7 +16,7 @@ from torchvision.transforms import Compose, ToTensor, Normalize
 from datasets.dataset_seg_metastasis import SlideDataset, TileDataset
 from models.mask2former import TrainCollator
 from utils.metrics import get_multi_class_metrics
-from utils.models import infer_collate_fn, TrainCollator
+from utils.models import infer_collate_fn, get_model_funcs, get_model_class_from_model
 from utils.utils import create_mask_from_contours
 from utils.data import post_process
 from utils.utils import detect_colors
@@ -24,7 +24,8 @@ from utils.utils import detect_colors
 
 @torch.no_grad()
 def infer_tiles(model, file_paths:List[str]) -> List[np.ndarray]:
-
+    model.eval()
+    _, _, post_process_output, _ = get_model_funcs(model)
     img_transform = Compose([
             ToTensor(),
             Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -163,6 +164,8 @@ def evaluate_wsi_tiles(
     os.makedirs(dataset_save_path, exist_ok=True)
     
     model.eval()
+    model_class = get_model_class_from_model(model)
+    _, _, post_process_output, _ = get_model_funcs(model)
     dataset = TileDataset(
         list_of_masks=annotations_paths,
         wsi_root=wsi_root,
@@ -175,7 +178,8 @@ def evaluate_wsi_tiles(
         data_augs=None)
     
     id2label = {v: k for k, v in label2id.items()}
-    tile_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, pin_memory=True, drop_last=False, collate_fn=TrainCollator(ignore_index))
+    collate_fn = TrainCollator(ignore_index) if model_class == 'Mask2FormerForUniversalSegmentation' else None
+    tile_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, pin_memory=True, drop_last=False, collate_fn=collate_fn)
     num_batches = len(tile_loader)
     dices, ious, mccs, coords, filenames = [], [], [], [], []
     categories_to_eval = [i for i in label2id.values() if i != ignore_index]
@@ -265,6 +269,7 @@ def infer_wsi(
 
     """
     model.eval()
+    _, _, post_process_output, _ = get_model_funcs(model)
     dataset = SlideDataset(
         wsi_path=wsi_path,
         filter_mask=filter_mask,

@@ -12,6 +12,7 @@ import matplotlib.patches as mpatches
 from typing import List, Dict
 
 ACCEPTED_WSI_TYPES = ['mrxs', 'svs', 'ndpi', 'tif', 'tiff']
+ACCEPTED_MODEL_CLASSES = ['UNet', 'SETR', 'UNETR', 'Mask2FormerForUniversalSegmentation']
 
 COLORMAP = {
         'Background': (125, 125, 125),          # white
