@@ -58,21 +58,14 @@ def create_model(encoder_model:str,
                  freeze_encoder:bool,
                  **kwargs) -> UNet:
     
-    config = BASE_CFG["_".join([encoder_model, "UNet"])]
+    config = BASE_CFG["resnet34-UNet"]
     config['num_classes'] = len(np.unique(list(label2id.values())))
-    config['id2label'] = {v: k for k, v in label2id.items()}
-    config['label2id'] = label2id
-    config['backbone_name'] = encoder_model 
+    config['backbone_name'] = 'resnet34' 
     config['freeze_backbone'] = freeze_encoder
     config['criterion'] = 'focaltversky'
     config['loss_weights'] = {'asymmetric_ftl':0.5, 'asymmetric_fl':0.5}
 
     model = UNet(**config)
-    
-    # Freeze Backbone
-    if freeze_encoder: 
-        for name, param in model.backbone.named_parameters():
-            param.requires_grad = False
 
     return model
 
