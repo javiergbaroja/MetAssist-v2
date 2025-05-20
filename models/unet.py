@@ -4,7 +4,7 @@ from segmentation_models_pytorch.unet import Unet
 
 import torch
 import torch.nn as nn
-from losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
+from models.losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
 from models.unetr_base import ModelOutput, BASE_CFG
 
 class UNet(nn.Module):

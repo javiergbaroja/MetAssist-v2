@@ -4,7 +4,7 @@ import numpy as np
 from transformers import Dinov2Backbone
 import torch
 import torch.nn as nn
-from losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
+from models.losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
 from models.unetr_base import BASE_CFG, get_embedding_combiner, ConvBlock, DeconvBlock, ModelOutput, ViTEncoder, foundation_backbones, facebook_backbones 
 from timm import create_model as timm_create_model
 

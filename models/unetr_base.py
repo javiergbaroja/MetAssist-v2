@@ -19,7 +19,7 @@ from transformers import Dinov2Backbone
 import torch
 import torch.nn as nn
 from timm.layers import PatchEmbed, LayerType, SwiGLUPacked
-from losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
+from models.losses_unet import Mask2FormerStyleLoss, AsymUnifiedFocalLoss
 
 
 
