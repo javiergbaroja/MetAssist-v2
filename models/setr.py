@@ -185,3 +185,25 @@ def custom_post_process_semantic_segmentation(outputs, target_sizes, return_logi
         return outputs.logits
     else:
         return outputs.y_pred
+    
+
+def post_process_output(outputs, target_sizes, return_logits=False):
+    """
+    Post-process the model outputs to create the final segmentation mask.
+
+    Args:
+        outputs: Model outputs.
+        target_sizes (list): List of target sizes.
+        return_logits (bool, optional): Whether to return the logits. Defaults to False.
+
+    Returns:
+        torch.Tensor: The final segmentation mask.
+    """
+    outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
+    outputs = torch.stack(outputs).squeeze().cpu()
+    while len(outputs.shape) < 4:
+        outputs = outputs.unsqueeze(0)
+    # unsqueeze_first = True if len(outputs.shape) < 4 else False
+    # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
+    assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+    return outputs.float()

@@ -178,3 +178,53 @@ def custom_post_process_semantic_segmentation(
             raise ValueError("Please provide target sizes for resizing the logits")
 
         return semantic_segmentation
+
+
+def post_process_output(outputs, target_sizes, return_logits=False):
+    """
+    Post-process the model outputs to create the final segmentation mask.
+
+    Args:
+        outputs: Model outputs.
+        target_sizes (list): List of target sizes.
+        return_logits (bool, optional): Whether to return the logits. Defaults to False.
+
+    Returns:
+        torch.Tensor: The final segmentation mask.
+    """
+    outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
+    outputs = torch.stack(outputs).squeeze().cpu()
+    while len(outputs.shape) < 4:
+        outputs = outputs.unsqueeze(0)
+    # unsqueeze_first = True if len(outputs.shape) < 4 else False
+    # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
+    assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+    return outputs.float()
+
+
+class TrainCollator:
+    def __init__(self, ignore_index:int):
+        self.processor = create_img_processor('swin-large-cityscapes-semantic', ignore_index=ignore_index)
+    def __call__(self, data) -> dict:
+        batch = {}
+        inputs = list(zip(*data))
+        images = inputs[0]
+        segmentation_maps = inputs[1]
+        coords = inputs[-2]
+        filenames = inputs[-1]
+        # this function pads the inputs to the same size,
+        # and creates a pixel mask
+        # actually padding isn't required here since we are cropping
+        data = self.processor(
+            images,
+            segmentation_maps=segmentation_maps,
+            return_tensors="pt",
+        )
+        batch["pixel_values"] = data['pixel_values']
+        batch["mask_labels"] = data['mask_labels']
+        batch["class_labels"] = data['class_labels']
+        batch["original_segmentation_maps"] = torch.stack(inputs[1])
+        batch["coords"] = coords
+        batch["filename"] = filenames
+        
+        return batch

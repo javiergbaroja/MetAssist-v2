@@ -12,9 +12,9 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.mask2former import create_model, custom_post_process_semantic_segmentation
+from models.mask2former import TrainCollator, create_model, custom_post_process_semantic_segmentation
 from utils.metrics import get_iou_multiclass
-from utils.models import create_mask2former_from_checkpoint, TrainCollator
+from utils.models import create_mask2former_from_checkpoint
 from trainers.trainer_base import TrainerBase
 
 

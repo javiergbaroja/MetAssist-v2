@@ -14,34 +14,12 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, ToTensor, Normalize
 
 from datasets.dataset_seg_metastasis import SlideDataset, TileDataset
-from models.mask2former import custom_post_process_semantic_segmentation
+from models.mask2former import TrainCollator
 from utils.metrics import get_multi_class_metrics
 from utils.models import infer_collate_fn, TrainCollator
 from utils.utils import create_mask_from_contours
 from utils.data import post_process
 from utils.utils import detect_colors
-
-
-def post_process_output(outputs, target_sizes, return_logits=False):
-    """
-    Post-process the model outputs to create the final segmentation mask.
-
-    Args:
-        outputs: Model outputs.
-        target_sizes (list): List of target sizes.
-        return_logits (bool, optional): Whether to return the logits. Defaults to False.
-
-    Returns:
-        torch.Tensor: The final segmentation mask.
-    """
-    outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
-    outputs = torch.stack(outputs).squeeze().cpu()
-    while len(outputs.shape) < 4:
-        outputs = outputs.unsqueeze(0)
-    # unsqueeze_first = True if len(outputs.shape) < 4 else False
-    # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
-    assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
-    return outputs.float()
 
 
 @torch.no_grad()

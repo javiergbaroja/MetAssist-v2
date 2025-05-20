@@ -3,34 +3,7 @@ from typing import List, Tuple
 from torchvision.transforms import functional as F
 
 from utils.augmentations import TestTimeAugmentation
-from models.mask2former import create_model, create_img_processor
-
-class TrainCollator:
-    def __init__(self, ignore_index:int):
-        self.processor = create_img_processor('swin-large-cityscapes-semantic', ignore_index=ignore_index)
-    def __call__(self, data) -> dict:
-        batch = {}
-        inputs = list(zip(*data))
-        images = inputs[0]
-        segmentation_maps = inputs[1]
-        coords = inputs[-2]
-        filenames = inputs[-1]
-        # this function pads the inputs to the same size,
-        # and creates a pixel mask
-        # actually padding isn't required here since we are cropping
-        data = self.processor(
-            images,
-            segmentation_maps=segmentation_maps,
-            return_tensors="pt",
-        )
-        batch["pixel_values"] = data['pixel_values']
-        batch["mask_labels"] = data['mask_labels']
-        batch["class_labels"] = data['class_labels']
-        batch["original_segmentation_maps"] = torch.stack(inputs[1])
-        batch["coords"] = coords
-        batch["filename"] = filenames
-        
-        return batch
+from utils.utils import ACCEPTED_MODEL_CLASSES
 
 def infer_collate_fn(batch: List[Tuple[torch.Tensor, Tuple[int, int, int, int], TestTimeAugmentation]]) -> Tuple[torch.Tensor, List[Tuple[int, int, int, int]], List[TestTimeAugmentation]]:
 
