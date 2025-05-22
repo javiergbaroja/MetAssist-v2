@@ -115,8 +115,11 @@ class SETR(nn.Module):
         return backbone
     
         
-    def forward(self, pixel_values: torch.Tensor, y_true:torch.Tensor=None) -> ModelOutput:
+    def forward(self, pixel_values: torch.Tensor, mask_labels:Union[torch.Tensor, list]=None, class_labels=None) -> ModelOutput:
         B, C, height, width = pixel_values.shape
+        if mask_labels is not None:
+            if isinstance(mask_labels, list):
+                mask_labels = torch.stack(mask_labels)
 
         pixel_values = self.backbone(pixel_values).feature_maps[0]
         pixel_values = self.embedding_combiner(pixel_values) # combine cls token and patch tokens
@@ -136,9 +139,8 @@ class SETR(nn.Module):
 
         return ModelOutput(preds=pixel_values,
                            logits=self.criterion.needs_logits,
-                           losses_dict=self.criterion(pixel_values, y_true) if y_true is not None else None,
+                           losses_dict=self.criterion(pixel_values, mask_labels) if mask_labels is not None else None,
                            loss_weights_dict=self.criterion.loss_weights)
-
 
 
 def create_model(encoder_model:str,  
@@ -208,11 +210,37 @@ def post_process_output(outputs, target_sizes, return_logits=False):
     Returns:
         torch.Tensor: The final segmentation mask.
     """
+    if return_logits:
+        final_shape = 4
+    else:
+        final_shape = 3
     outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
     outputs = outputs.squeeze().cpu()
-    while len(outputs.shape) < 4:
+    while len(outputs.shape) < final_shape:
         outputs = outputs.unsqueeze(0)
     # unsqueeze_first = True if len(outputs.shape) < 4 else False
     # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
-    assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+    if return_logits:
+        assert len(outputs.shape) == final_shape, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+    else:
+        assert len(outputs.shape) == final_shape, f"Expected 3D tensor (BHW), got {outputs.shape}"
     return outputs.float()
+
+
+class TrainCollator:
+    def __init__(self, ignore_index:int):
+        self.processor = None
+    def __call__(self, data) -> dict:
+        batch = {}
+        inputs = list(zip(*data))
+        coords = inputs[-2]
+        filenames = inputs[-1]
+
+        batch["pixel_values"] = torch.stack(inputs[0])
+        batch["mask_labels"] = torch.stack(inputs[1])
+        batch["class_labels"] = [None]*len(inputs[1])
+        batch["original_segmentation_maps"] = torch.stack(inputs[1])
+        batch["coords"] = coords
+        batch["filename"] = filenames
+        
+        return batch

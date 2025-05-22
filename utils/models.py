@@ -58,7 +58,8 @@ def get_model_funcs(model_class:str) -> Tuple:
     create_model = getattr(module, 'create_model', None)
     post_process_output = getattr(module, 'post_process_output', None)
     custom_post_process_semantic_segmentation = getattr(module, 'custom_post_process_semantic_segmentation', None)
-    return create_img_processor, create_model, post_process_output, custom_post_process_semantic_segmentation
+    train_collator = getattr(module, 'TrainCollator', None)
+    return create_img_processor, create_model, post_process_output, custom_post_process_semantic_segmentation, train_collator
 
 
 
@@ -79,7 +80,7 @@ def create_mask2former_from_checkpoint(checkpoint_path, label2id:dict, encoder_n
         return checkpoint_path
     
     model_class = get_model_class_from_checkpoint(checkpoint_path)
-    _, create_model, _, _ = get_model_funcs(model_class)
+    _, create_model, _, _, _ = get_model_funcs(model_class)
     
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model = create_model(

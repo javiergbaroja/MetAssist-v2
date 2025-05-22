@@ -118,9 +118,12 @@ class UNETR(nn.Module):
         return backbone
 
         
-    def forward(self, pixel_values: torch.Tensor, y_true:torch.Tensor=None) -> ModelOutput:
+    def forward(self, pixel_values: torch.Tensor, mask_labels:Union[torch.Tensor, list]=None, class_labels=None) -> ModelOutput:
 
         B, _, height, width = pixel_values.shape
+        if mask_labels is not None:
+            if isinstance(mask_labels, list):
+                mask_labels = torch.stack(mask_labels)
 
         intermediates = list(self.backbone(pixel_values).feature_maps)
         # combine embeddings from cls token and patch tokens from the last block
@@ -156,7 +159,7 @@ class UNETR(nn.Module):
         pixel_values = self.segmentation_head(pixel_values)     
         return ModelOutput(preds=pixel_values,
                            logits=self.criterion.needs_logits,
-                           losses_dict=self.criterion(pixel_values, y_true) if y_true is not None else None,
+                           losses_dict=self.criterion(pixel_values, mask_labels) if mask_labels is not None else None,
                            loss_weights_dict=self.criterion.loss_weights)
     
 
@@ -229,3 +232,22 @@ def post_process_output(outputs, target_sizes, return_logits=False):
     # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
     assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
     return outputs.float()
+
+
+class TrainCollator:
+    def __init__(self, ignore_index:int):
+        self.processor = None
+    def __call__(self, data) -> dict:
+        batch = {}
+        inputs = list(zip(*data))
+        coords = inputs[-2]
+        filenames = inputs[-1]
+
+        batch["pixel_values"] = torch.stack(inputs[0])
+        batch["mask_labels"] = torch.stack(inputs[1])
+        batch["class_labels"] = [None]*len(inputs[1])
+        batch["original_segmentation_maps"] = torch.stack(inputs[1])
+        batch["coords"] = coords
+        batch["filename"] = filenames
+        
+        return batch

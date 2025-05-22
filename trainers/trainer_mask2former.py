@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.mask2former import TrainCollator
 from utils.metrics import get_iou_multiclass
 from utils.models import create_mask2former_from_checkpoint, get_model_funcs, get_model_class_from_checkpoint
 from trainers.trainer_base import TrainerBase
@@ -31,7 +30,7 @@ class TrainerMask2Former(TrainerBase):
         self.result_save_path = os.path.join(result_path_parent, f'fold_{args.fold}')
         self.initialize_paths()
         self.model_class = get_model_class_from_checkpoint(self.model_save_path)
-        _, create_model, _, self.custom_post_process_semantic_segmentation = get_model_funcs(self.model_class)
+        _, create_model, self.post_process_output, _, self.train_collator = get_model_funcs(self.model_class)
         self.model = create_model(encoder_model=args.encoder_model, 
                                   decoder_model=args.decoder_model, 
                                   label2id=args.label2id, 
@@ -40,7 +39,7 @@ class TrainerMask2Former(TrainerBase):
                                   freeze_encoder=True)
         
         self.optimizer = optim.AdamW(self.model.parameters(), lr=args.learning_rate)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=round(args.num_epochs*0.2), T_mult=1, eta_min=1e-7, last_epoch=-1)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=round(args.num_epochs*0.2), T_mult=1, eta_min=1e-6, last_epoch=-1)
 
         # training params
         self.num_epochs = args.num_epochs
@@ -158,7 +157,7 @@ class TrainerMask2Former(TrainerBase):
         )
         val_names = [os.path.splitext(os.path.basename(i))[0] for i in dataset_valid.list_of_masks]
         self.accelerator.print(f"Validation set B-numbers: {val_names}")
-        train_collator = TrainCollator(ignore_index=self.ignored_index) if self.model_class == 'Mask2FormerForUniversalSegmentation' else None
+        train_collator = self.train_collator(ignore_index=self.ignored_index)
         train_loader = torch.utils.data.DataLoader(
             dataset_train,
             batch_size=batch_size,
@@ -283,16 +282,15 @@ class TrainerMask2Former(TrainerBase):
             indices = range(len(batch['pixel_values']))
 
         batch["pixel_values"] = batch["pixel_values"][indices]
-        target_sizes = [(target.size(1), target.size(2)) for target in [batch["mask_labels"][i] for i in indices]]
+        target_sizes = [(target.size(1), target.size(2)) for target in [batch["mask_labels"][i] for i in indices]] if self.model_class == 'Mask2FormerforUniversalSegmentation' else None
         outputs = self.model(pixel_values=batch["pixel_values"]) if within_train_loop else self.model(pixel_values=batch["pixel_values"], mask_labels=[labels for labels in batch["mask_labels"]], class_labels=[labels for labels in batch["class_labels"]])
         batch = self.accelerator.gather_for_metrics(batch["original_segmentation_maps"][indices]).cpu()
 
-        predicted_segmentation_maps = self.custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=False)
-        predicted_segmentation_maps = self.accelerator.gather_for_metrics(torch.stack(predicted_segmentation_maps))    
-        unsqueeze_first = True if predicted_segmentation_maps.shape[0] == 1 else False
-        predicted_segmentation_maps = predicted_segmentation_maps.squeeze().unsqueeze(0).cpu().numpy() if unsqueeze_first else predicted_segmentation_maps.squeeze().cpu().numpy()
+        predicted_segmentation_maps = self.post_process_output(outputs, target_sizes=target_sizes, return_logits=False)
+        predicted_segmentation_maps = self.accelerator.gather_for_metrics(predicted_segmentation_maps).numpy()
         unsqueeze_first = True if batch.shape[0] == 1 else False
         batch = batch.squeeze().unsqueeze(0).numpy() if unsqueeze_first else batch.squeeze().numpy()
+        self.accelerator.print(f"Batch shape: {batch.shape}, Predicted shape: {predicted_segmentation_maps.shape}")
         ious_score.append(
             list(
                 get_iou_multiclass(y_true, 
