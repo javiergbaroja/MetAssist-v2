@@ -25,7 +25,7 @@ from utils.utils import detect_colors
 @torch.no_grad()
 def infer_tiles(model, file_paths:List[str]) -> List[np.ndarray]:
     model.eval()
-    _, _, post_process_output, _ = get_model_funcs(model)
+    _, _, post_process_output, _, _ = get_model_funcs(model)
     img_transform = Compose([
             ToTensor(),
             Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -165,7 +165,7 @@ def evaluate_wsi_tiles(
     
     model.eval()
     model_class = get_model_class_from_model(model)
-    _, _, post_process_output, _ = get_model_funcs(model)
+    _, _, post_process_output, _, _ = get_model_funcs(model)
     dataset = TileDataset(
         list_of_masks=annotations_paths,
         wsi_root=wsi_root,
@@ -269,7 +269,7 @@ def infer_wsi(
 
     """
     model.eval()
-    _, _, post_process_output, _ = get_model_funcs(model)
+    _, _, post_process_output, _, _ = get_model_funcs(model)
     dataset = SlideDataset(
         wsi_path=wsi_path,
         filter_mask=filter_mask,
