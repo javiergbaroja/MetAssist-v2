@@ -42,7 +42,7 @@ def infer_tiles(model, file_paths:List[str]) -> List[np.ndarray]:
         target_sizes = [(t.shape[1], t.shape[2]) for t in tile]
 
         # gather for prediction mask creation
-        pred = post_process_output(pred, target_sizes).squeeze().numpy()
+        pred = post_process_output(pred, target_sizes).cpu().squeeze().numpy()
         preds.append(pred)
 
     return preds    
@@ -296,7 +296,7 @@ def infer_wsi(
             target_sizes = [(t.shape[1], t.shape[2]) for t in batch]
 
             # gather for prediction mask creation
-            outputs = post_process_output(outputs, target_sizes, return_logits=True)            
+            outputs = post_process_output(outputs, target_sizes, return_logits=True).cpu()         
             dataset.stitch_predictions(outputs, coords)
             
             data_iterator.update(1)  # Update the progress bar 

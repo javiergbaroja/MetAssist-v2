@@ -192,13 +192,20 @@ def post_process_output(outputs, target_sizes, return_logits=False):
     Returns:
         torch.Tensor: The final segmentation mask.
     """
+    if return_logits:
+        final_shape = 4
+    else:
+        final_shape = 3
     outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
-    outputs = torch.stack(outputs).squeeze().cpu()
-    while len(outputs.shape) < 4:
+    outputs = torch.stack(outputs).squeeze()
+    while len(outputs.shape) < final_shape:
         outputs = outputs.unsqueeze(0)
     # unsqueeze_first = True if len(outputs.shape) < 4 else False
     # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
-    assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+    if return_logits:
+        assert len(outputs.shape) == final_shape, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+    else:
+        assert len(outputs.shape) == final_shape, f"Expected 3D tensor (BHW), got {outputs.shape}"
     return outputs.float()
 
 

@@ -287,7 +287,7 @@ class TrainerMask2Former(TrainerBase):
         batch = self.accelerator.gather_for_metrics(batch["original_segmentation_maps"][indices]).cpu()
 
         predicted_segmentation_maps = self.post_process_output(outputs, target_sizes=target_sizes, return_logits=False)
-        predicted_segmentation_maps = self.accelerator.gather_for_metrics(predicted_segmentation_maps).numpy()
+        predicted_segmentation_maps = self.accelerator.gather_for_metrics(predicted_segmentation_maps).cpu().numpy()
         unsqueeze_first = True if batch.shape[0] == 1 else False
         batch = batch.squeeze().unsqueeze(0).numpy() if unsqueeze_first else batch.squeeze().numpy()
         self.accelerator.print(f"Batch shape: {batch.shape}, Predicted shape: {predicted_segmentation_maps.shape}")
