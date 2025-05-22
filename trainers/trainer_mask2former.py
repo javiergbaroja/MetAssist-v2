@@ -290,7 +290,6 @@ class TrainerMask2Former(TrainerBase):
         predicted_segmentation_maps = self.accelerator.gather_for_metrics(predicted_segmentation_maps).cpu().numpy()
         unsqueeze_first = True if batch.shape[0] == 1 else False
         batch = batch.squeeze().unsqueeze(0).numpy() if unsqueeze_first else batch.squeeze().numpy()
-        self.accelerator.print(f"Batch shape: {batch.shape}, Predicted shape: {predicted_segmentation_maps.shape}")
         ious_score.append(
             list(
                 get_iou_multiclass(y_true, 
