@@ -174,7 +174,7 @@ def post_process(segmentation_mask:np.ndarray,
                  erase_thresholds:list=[0.01], 
                  apply_opening:list=[False],
                  min_ln_area:int=None,
-                 complexity_threshold:float=2.6) -> np.ndarray:
+                 complexity_threshold:float=2.9) -> np.ndarray:
     
     def remove_noise(labeled_ln_mask:np.ndarray, ln_mask:np.ndarray):
         kernel = np.ones((5, 5), np.uint8)
@@ -398,8 +398,24 @@ def post_process(segmentation_mask:np.ndarray,
                         
         if not np.any(aux_mask != old):
             different = False
+        
+    # 1. Identify lymph node regions
+    lns = (aux_mask == lymph_node_class).astype(np.uint8)
 
-    # itereate over LNs
+    # 2. Dilate the lymph node mask
+    lns_dilated = cv2.dilate(lns, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=5)
+
+    # 3. Keep only the dilated parts that overlap background
+    dilated_into_background = (lns_dilated == 1) & (aux_mask == 0)
+    aux_mask[dilated_into_background] = lymph_node_class
+
+    # 4. Recompute the lymph node mask and fill all holes
+    lns_filled = binary_fill_holes((aux_mask == lymph_node_class)).astype(np.uint8)
+
+    # 5. Overwrite entire filled region with lymph node class
+    aux_mask[lns_filled == 1] = lymph_node_class
+
+    # 6. Remove small objects and complex objects
     num_labels, labeled_lns = cv2.connectedComponents((aux_mask == lymph_node_class).astype(np.uint8))
     for i in range(1, num_labels):
         # create mask for current label
@@ -426,23 +442,6 @@ def post_process(segmentation_mask:np.ndarray,
         elif is_complex:
             aux_mask[current_label_mask == 1] = 2
             print(f'removed complex object, complexity ratio {complexity_ratio:.2f}')
-        # area = cv2.countNonZero(current_label_mask)
-        
-    # 1. Identify lymph node regions
-    lns = (aux_mask == lymph_node_class).astype(np.uint8)
-
-    # 2. Dilate the lymph node mask
-    lns_dilated = cv2.dilate(lns, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=5)
-
-    # 3. Keep only the dilated parts that overlap background
-    dilated_into_background = (lns_dilated == 1) & (aux_mask == 0)
-    aux_mask[dilated_into_background] = lymph_node_class
-
-    # 4. Recompute the lymph node mask and fill all holes
-    lns_filled = binary_fill_holes((aux_mask == lymph_node_class)).astype(np.uint8)
-
-    # 5. Overwrite entire filled region with lymph node class
-    aux_mask[lns_filled == 1] = lymph_node_class
 
     segmentation_mask[y1_original:y1_original+h_original, x1_original:x1_original+w_original] = aux_mask
     return segmentation_mask

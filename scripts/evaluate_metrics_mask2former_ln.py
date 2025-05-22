@@ -149,7 +149,8 @@ def main(args):
         else:
             print(f'WSI for annotation {wsi_name} was not found')
 
-
+    if args.apply_post_processing:
+        args.output_dir = os.path.join(args.output_dir, '_processed')
     # if no annotation files found, exit
     if len(ann_wsi_pairs) == 0:
         sys.exit('No annotation files found. Please check the path to annotation files and the WSI list')

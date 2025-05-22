@@ -74,10 +74,10 @@ def evaluate_wsi_slide(
         mucin = pred == label2id['Mucin']
         pred = post_process(segmentation_mask=pred,
                             lymph_node_class=label2id['Lymph node'],
-                            classes_to_merge=[label2id['Primary tumor']],
-                            merge_thresholds=[0.95],
-                            erase_thresholds=[0.075],
-                            apply_opening=[True],
+                            classes_to_merge=[label2id['Primary tumor'], label2id['Mucin']],
+                            merge_thresholds=[0.95, 0.05],
+                            erase_thresholds=[0.075, 0.01],
+                            apply_opening=[True, False],
                             min_ln_area=min_area)
         # reinstate mucin
         pred[mucin] = label2id['Mucin']
