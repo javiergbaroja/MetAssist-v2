@@ -282,7 +282,7 @@ class TrainerMask2Former(TrainerBase):
             indices = range(len(batch['pixel_values']))
 
         batch["pixel_values"] = batch["pixel_values"][indices]
-        target_sizes = [(target.size(1), target.size(2)) for target in [batch["mask_labels"][i] for i in indices]] if self.model_class == 'Mask2FormerforUniversalSegmentation' else None
+        target_sizes = [(target.size(1), target.size(2)) for target in [batch["mask_labels"][i] for i in indices]] if self.model_class == 'Mask2FormerForUniversalSegmentation' else None
         outputs = self.model(pixel_values=batch["pixel_values"]) if within_train_loop else self.model(pixel_values=batch["pixel_values"], mask_labels=[labels for labels in batch["mask_labels"]], class_labels=[labels for labels in batch["class_labels"]])
         batch = self.accelerator.gather_for_metrics(batch["original_segmentation_maps"][indices]).cpu()
 
