@@ -39,10 +39,15 @@ class TrainerMask2Former(TrainerBase):
                                   freeze_encoder=True)
         
         self.optimizer = optim.AdamW(self.model.parameters(), lr=args.learning_rate)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=round(args.num_epochs*0.2), T_mult=1, eta_min=1e-6, last_epoch=-1)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 
+                                                                        T_0=round(args.num_epochs*0.2) if args.finetuning_path is None else args.num_epochs, 
+                                                                        T_mult=1, 
+                                                                        eta_min=args.learning_rate/10, 
+                                                                        last_epoch=-1)
 
         # training params
         self.num_epochs = args.num_epochs
+        self.lr_start = args.learning_rate
         self.early_stopping = args.early_stopping
         self.train_by_fixed_batches = args.train_by_fixed_batches
         self.valid_by_fixed_batches = args.valid_by_fixed_batches
@@ -92,7 +97,7 @@ class TrainerMask2Former(TrainerBase):
                 self.accelerator.print(f'Model device: {next(self.model.parameters()).device}')
                 optimizer = optim.AdamW(self.model.parameters(), lr=self.optimizer.defaults['lr'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-6)
+                scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=round(self.num_epochs*0.2) if finetuning_path is None else self.num_epochs, T_mult=1, eta_min=self.lr_start/10, last_epoch=-1)
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 self.train_results, self.valid_results = checkpoint['train_loss'], checkpoint['valid_loss']
                 self.valid_min_loss = checkpoint['valid_loss'][-1]

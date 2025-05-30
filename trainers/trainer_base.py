@@ -48,6 +48,7 @@ class TrainerBase:
         self.num_batches_per_epoch = 0
         self.valid_min_loss = float('inf')
         self.num_epochs = 0
+        self.lr_start = 0.0
         self.early_stopping = 0
         self.batch_size = 0
 
