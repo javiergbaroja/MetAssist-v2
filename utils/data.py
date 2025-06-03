@@ -114,7 +114,6 @@ def extract_tile_coords(slide:openslide.OpenSlide, filter_mask: Optional[np.ndar
             tile = cv2.cvtColor(tile, cv2.COLOR_RGBA2RGB)
 
             # save as png
-            # Image.fromarray(tile).save(f'/storage/research/igmp_slide_workspace/GRP Zlobec/Amjad/qupath/metassist-v1/MetAssist_expansion/crc-ugi/results/debug/tiles/tile_{x}_{y}.png')
             # divide tile in quadrants and check if any of them has colors. For the ones that don't, turn into white
             h, w, _ = tile.shape
             half_h, half_w = h // 2, w // 2
@@ -152,7 +151,6 @@ def extract_tile_coords(slide:openslide.OpenSlide, filter_mask: Optional[np.ndar
     
     return coords
 
-# np.save('/storage/research/igmp_slide_workspace/GRP Zlobec/Amjad/qupath/metassist-v1/MetAssist_expansion/crc-ugi/results/debug/coords_new_old.npy', np.array(coords))
 def calc_expected_max_overlap_num(coords: List[Tuple[int, int, int, int]], padded_shape: Tuple[int, int], crop_size: int) -> int:
     count_map = np.zeros(padded_shape, dtype=np.uint8)
     for (row_start, row_end, col_start, col_end) in coords:
@@ -259,8 +257,6 @@ def post_process(segmentation_mask:np.ndarray,
 
         # Step 2: Label both original and opened masks
         num_labels, labels_orig = cv2.connectedComponents(orig_mask)
-        # _, labels_opened = cv2.connectedComponents(opened)
-
         # Step 3: Recover objects from original mask that disappeared in opened
 
         for label_id in range(1, num_labels):  # skip background
