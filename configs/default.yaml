@@ -1,0 +1,48 @@
+# Global Pipeline Configurations
+input_dir: null
+output_dir: null
+
+# Export Formats
+save_qupath_geojson: false
+save_ometiff_overlays: false
+save_slide_level_result: true
+apply_post_processing: true
+ignore_class_for_overlay: ["background", "unannotated"]
+overwrite_existing_results: false
+
+# Task 1: Lymph Node Segmentation
+ln_task:
+  run: true
+  checkpoint_path: "/storage/research/igmp_slide_workspace/GRP Zlobec/Amjad/qupath/metassist-v1/MetAssist_expansion/crc-ugi/results/Virchow_deep_LN_Tumor_Normal_Vessel_Fat_Mucin_v2/checkpoints/dinov2-h-virchow2_swin-large-cityscapes-semantic_res_8.0_tile_size_672_step_size_504_fold_1.pt"
+  encoder_model: "dinov2-h-virchow2"
+  decoder_model: "swin-large-cityscapes-semantic"
+  feature_layers: [12, 16, 20, 24]
+  resolution: 8.0  # mpp for lymph node segmentation
+  tile_size: 672
+  step_size: 112
+  crop_pred_edge: 50
+  batch_size: 30
+  label2id:
+    "background": 0
+    "lymph_node": 1
+    "tumor_deposit_or_primary_tumor": 2   
+    "healthy_primary": 3
+    "fat": 4
+    "vessel": 5
+    "mucin": 6
+  
+met_task:
+  run: true
+  checkpoint_path: "/storage/research/igmp_slide_workspace/GRP Zlobec/Amjad/qupath/metassist-v1/MetAssist_expansion/crc-ugi/results/Virchow_deepest_crcugi_met/dinov2-h-virchow2_swin-large-cityscapes-semantic_res_1.0_tile_size_336_step_size_280/checkpoints/dinov2-h-virchow2_swin-large-cityscapes-semantic_res_1.0_tile_size_336_step_size_280_fold_4.pt"
+  encoder_model: "dinov2-h-virchow2"
+  decoder_model: "swin-large-cityscapes-semantic"
+  feature_layers: [16, 20, 24, 31]
+  resolution: 1.0  # mpp for metastasis detection
+  tile_size: 336
+  step_size: 112
+  crop_pred_edge: 84
+  batch_size: 100
+  label2id:
+    "unannotated": 0
+    "background": 1
+    "tumor": 2

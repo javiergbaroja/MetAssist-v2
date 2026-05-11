@@ -7,11 +7,16 @@ import matplotlib.patches as mpatches
 
 COLORMAP = {
         'Background': (125, 125, 125),          # white
+        'background': (125, 125, 125),          # white
+        'unanotated': (125, 125, 125),          # white
         'Unanotated': (125, 125, 125),          # white
         'Lymph node': (229, 100, 84),           # orange
+        'lymph_node': (229, 100, 84),           # orange
         'Tumor deposits': (212, 185, 60),       # dark yellow
+        'tumor_deposit_or_primary_tumor': (212, 185, 60),       # dark yellow
         'Primary tumor': (54, 90, 113),         # blue
         'Primary tissue': (0, 124, 169),        # cyan
+        'healthy_primary': (0, 124, 169),        # cyan
         'Ink': (11, 72, 205),                   # dark blue
         'Vessels': (106, 29, 125),              # purple
         'Metastasis': (117, 173, 81),           # light green
@@ -20,6 +25,7 @@ COLORMAP = {
         'Folds': (73, 103, 40),                 # dark green
         'Fat tissue': (255, 255, 153),          # light yellow
         'Mucin': (220, 220, 220),               # light grey
+        'mucin': (220, 220, 220),               # light grey
         'Slide edge': (48, 213, 200),           # turquoise
         'Training region': (0, 0, 0),           # black
 
@@ -42,7 +48,6 @@ COLORMAP = {
         "Lymphoid tissue": (0, 0, 128),         # maroon
         "Stroma": (255, 182, 193),              # pink
         "Mucous": (220, 220, 220),              # light grey
-        "Tumor": (117, 173, 81),                # light green
         "Necrosis/debris": (50, 50, 50),        # grey
         "Muscle": (128, 0, 0),                  # maroon
         "Muscle/vessel": (128, 0, 0),           # maroon
