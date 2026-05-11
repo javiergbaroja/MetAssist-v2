@@ -8,11 +8,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0,os.path.dirname(SCRIPT_DIR))
 
 import numpy as np
-
-from utils.models import create_mask2former_from_checkpoint
-from utils.utils import  save_geojson_annotation, save_overlay, save_npy_mask
-from utils.data import post_process
-from utils.inference import infer_wsi
+import cv2
+from models.model_io import create_mask2former_from_checkpoint
+from engine.inference import infer_wsi
+from utils.postprocessing import post_process
+from utils.wsi import detect_colors
+from utils.geometry import save_geojson_annotation, save_npy_mask
+from utils.visualization import save_overlay
 
 def main(args):
     downsample_factor = 1
@@ -32,10 +34,10 @@ def main(args):
 
     # Load model
     model = create_mask2former_from_checkpoint(checkpoint_path=args.checkpoint_path, label2id=args.label2id, encoder_name=args.encoder_model, decoder_model=args.decoder_model, out_indices=args.feature_layers)
-    pred_mask, level, level_downsampling, read_origin = infer_wsi(model, args.wsi_path, filter_mask, args.batch_size, args.tile_size, args.step_size, args.crop_pred_edge, args.resolution, downsample_factor)
+    pred_mask, level, level_downsampling, exact_resolution, tiling_downsample_factor, read_origin,__,__ = infer_wsi(model, args.wsi_path, filter_mask, args.batch_size, args.tile_size, args.step_size, args.crop_pred_edge, args.resolution, downsample_factor)
 
     if args.apply_post_processing:
-        min_ln_area = ((600/2) / args.resolution) ** 2 * np.pi # min diameter of 600um, converted to pixels square
+        min_ln_area = ((600/2) / (exact_resolution*tiling_downsample_factor)) ** 2 * np.pi # min diameter of 600um, converted to pixels square
         pred_mask = post_process(segmentation_mask=pred_mask, 
                             lymph_node_class=args.label2id['Lymph node'], 
                             classes_to_merge=[args.label2id['Primary tumor'], args.label2id['Mucin']], 
@@ -43,6 +45,20 @@ def main(args):
                             erase_thresholds=[0.01, 0.01], 
                             apply_opening=[True, False],
                             min_ln_area=int(min_ln_area))
+        # # remove LNs detected in noise
+        ln_mask = (pred_mask == args.label2id['Lymph node']).astype(np.uint8)
+        num_labels, labeled_lns = cv2.connectedComponents(ln_mask)
+        for i in range(1, num_labels):
+            bbox = cv2.boundingRect((labeled_lns == i).astype(np.uint8))
+            # read region of interest from the original WSI
+            crop = np.array(openslide.open_slide(args.wsi_path).read_region((read_origin[0]+bbox[0]*level_downsampling, read_origin[1]+bbox[1]*level_downsampling), level, (bbox[2]*tiling_downsample_factor, bbox[3]*tiling_downsample_factor)))
+            crop[crop[:, :, 3] == 0] = 255
+            crop = cv2.cvtColor(crop, cv2.COLOR_RGBA2RGB)
+            if tiling_downsample_factor > 1:
+                crop = cv2.resize(crop, (crop.shape[1] // tiling_downsample_factor, crop.shape[0] // tiling_downsample_factor), interpolation=cv2.INTER_LINEAR)
+            has_colors = detect_colors(crop[ln_mask[bbox[1]:bbox[1]+bbox[3], bbox[0]:bbox[0]+bbox[2]] > 0], 0.025)
+            if not has_colors:
+                pred_mask[bbox[1]:bbox[1]+bbox[3], bbox[0]:bbox[0]+bbox[2]] = args.label2id['Background']
         
     if args.prepare_overlay:
         save_overlay(out_path=os.path.join(args.output_dir, f'{wsi_name}_overlay.png'),
@@ -51,13 +67,14 @@ def main(args):
                         level=level,
                         read_origin=read_origin,
                         level_downsampling=level_downsampling,
+                        downsizing_factor=tiling_downsample_factor,
                         label2id=args.label2id)
     
     if args.prepare_qupath:
         save_geojson_annotation(out_path=os.path.join(args.output_dir, f'{wsi_name}.geojson'),
                                 mask=pred_mask,
                                 level=level,
-                                level_downsampling=level_downsampling,
+                                level_downsampling=level_downsampling*tiling_downsample_factor,
                                 category_dict=args.label2id)
             
     if args.prepare_pred_mask:

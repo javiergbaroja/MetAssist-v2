@@ -27,7 +27,6 @@ import openslide
 
 import os
 import sys
-import glob
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0,os.path.dirname(SCRIPT_DIR))
 
@@ -39,9 +38,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from utils.models import create_mask2former_from_checkpoint
-from utils.utils import divide_list_slurm_array, get_ann_files, check_wsi_exists_all_formats, combine_results, save_geojson_annotation, COLORMAP
-from utils.inference import evaluate_wsi_slide
+from models.model_io import create_mask2former_from_checkpoint
+from engine.inference import evaluate_wsi_slide
+from utils.hpc import divide_list_slurm_array, combine_results
+from utils.visualization import COLORMAP
+from utils.wsi import check_wsi_exists_all_formats
+from utils.geometry import check_wsi_exists_all_formats, save_geojson_annotation
+from utils.io import get_ann_files
 
 def print_summary(results:pd.DataFrame, output_dir:str, eval_class:str):
     """
@@ -175,6 +178,7 @@ def main(args):
                 label2id=args.label2id,
                 crop_pred_edge=args.crop_pred_edge,
                 apply_post_processing=args.apply_post_processing,
+                retain_mucin=args.retain_mucin
             )
             if results_all is None:
                 results_all = pd.DataFrame(data=results, index=[0])
@@ -226,6 +230,7 @@ if __name__ == "__main__":
     parser.add_argument('--crop_pred_edge', type=int, help='Step size', default=50)
     parser.add_argument('--eval_class', type=str, help='Class for which evaluation will be tracked', default='Lymph node')
     parser.add_argument('--resolution', type=float, help='Resolution', default=0.5)
+    parser.add_argument('--retain_mucin', action='store_true', help='Retain mucin in the output prediction')
     parser.add_argument('--apply_post_processing', action='store_true', help='Postprocess the output prediction before computing metrics')
     parser.add_argument('--prepare_qupath', action='store_true', help='Prepare QuPath compatible output')
     parser.add_argument('--prepare_overlay', action='store_true', help='Prepare sparse output')

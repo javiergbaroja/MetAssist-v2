@@ -1,6 +1,7 @@
 from tqdm import tqdm
 import os
 import shutil
+import time
 from typing import List, Tuple
 
 import openslide
@@ -8,24 +9,25 @@ import numpy as np
 import zarr
 import cv2
 import json
+import gc
 
 import torch
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, ToTensor, Normalize
 
-from datasets.dataset_seg_metastasis import SlideDataset, TileDataset
-from models.mask2former import TrainCollator
+from data.dataset_seg import SlideDataset, TileDataset
+from models.architectures.mask2former import TrainCollator
 from utils.metrics import get_multi_class_metrics
-from utils.models import infer_collate_fn, get_model_funcs, get_model_class_from_model
-from utils.utils import create_mask_from_contours
-from utils.data import post_process
-from utils.utils import detect_colors
+from models.model_io import post_process_output, infer_collate_fn, get_model_funcs, get_model_class_from_model, InferCollator
+from utils.geometry import create_mask_from_contours
+from utils.postprocessing import post_process
+from utils.wsi import detect_colors
 
 
 @torch.no_grad()
 def infer_tiles(model, file_paths:List[str]) -> List[np.ndarray]:
     model.eval()
-    _, _, post_process_output, _, _ = get_model_funcs(model)
+    # _, _, post_process_output, _, _ = get_model_funcs(model)
     img_transform = Compose([
             ToTensor(),
             Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -58,19 +60,20 @@ def evaluate_wsi_slide(
         resolution:float, 
         label2id:dict,
         crop_pred_edge:int,
-        apply_post_processing:bool
+        apply_post_processing:bool,
+        retain_mucin:bool = True
 ) -> Tuple[dict, np.ndarray, np.ndarray, int, int]:
     
     model.eval()
     id2label = {v: k for k, v in label2id.items()}
-    pred, level, downsampling_level, exact_resolution, read_origin = infer_wsi(model, wsi_path, np.ones((5,5), dtype=np.uint8), batch_size, tile_size, step_size, crop_pred_edge, resolution)
+    pred, level, downsampling_level, exact_resolution, tiling_downsample_factor, read_origin, time, time_tile = infer_wsi(model, wsi_path, np.ones((5,5), dtype=np.uint8), batch_size, tile_size, step_size, crop_pred_edge, resolution)
     with open(annotation_path) as f:
         geojson = json.load(f)
 
     gt = create_mask_from_contours(geojson, label2id, pred.shape, downsampling_level, order=list(label2id.values()))
 
     if apply_post_processing:
-        min_area = int(((600/2) / exact_resolution) ** 2 * np.pi) # Min diameter of 600 um, converted to pixels square
+        min_area = int(((600/2) / (exact_resolution)*tiling_downsample_factor) ** 2 * np.pi) # Min diameter of 600 um, converted to pixels square
         mucin = pred == label2id['Mucin']
         pred = post_process(segmentation_mask=pred,
                             lymph_node_class=label2id['Lymph node'],
@@ -79,19 +82,30 @@ def evaluate_wsi_slide(
                             erase_thresholds=[0.075, 0.01],
                             apply_opening=[True, False],
                             min_ln_area=min_area)
-        # reinstate mucin
-        pred[mucin] = label2id['Mucin']
+        if retain_mucin:
+            pred[mucin] = label2id['Mucin']
+        else:
+            gt = post_process(segmentation_mask=gt,
+                            lymph_node_class=label2id['Lymph node'],
+                            classes_to_merge=[label2id['Mucin']],
+                            merge_thresholds=[0.05],
+                            erase_thresholds=[0.01],
+                            apply_opening=[False],
+                            min_ln_area=min_area)
 
         # # remove LNs detected in noise
         ln_mask = (pred == label2id['Lymph node']).astype(np.uint8)
+        wsi = openslide.open_slide(wsi_path)
         num_labels, labeled_lns = cv2.connectedComponents(ln_mask)
         for i in range(1, num_labels):
             bbox = cv2.boundingRect((labeled_lns == i).astype(np.uint8))
             # read region of interest from the original WSI
-            crop = openslide.open_slide(wsi_path).read_region((read_origin[0]+bbox[0]*downsampling_level, read_origin[1]+bbox[1]*downsampling_level), level, (bbox[2], bbox[3]))
+            crop = wsi.read_region((read_origin[0]+bbox[0]*downsampling_level, read_origin[1]+bbox[1]*downsampling_level), level, (bbox[2]*tiling_downsample_factor, bbox[3]*tiling_downsample_factor))
             crop = np.array(crop)
             crop[crop[:, :, 3] == 0] = 255
             crop = cv2.cvtColor(crop, cv2.COLOR_RGBA2RGB)
+            if tiling_downsample_factor > 1:
+                crop = cv2.resize(crop, (crop.shape[1]//tiling_downsample_factor, crop.shape[0]//tiling_downsample_factor), interpolation=cv2.INTER_NEAREST)
             crop_ln = crop[ln_mask[bbox[1]:bbox[1]+bbox[3], bbox[0]:bbox[0]+bbox[2]] > 0] 
             has_colors = detect_colors(crop_ln)
             if not has_colors:
@@ -112,6 +126,8 @@ def evaluate_wsi_slide(
 
     results = {}
     results["filename"] = os.path.splitext(os.path.basename(wsi_path))[0]
+    results['time_inference_wsi'] = time
+    results['time_inference_tile'] = time_tile
 
     for i, k in enumerate(categories_to_eval):
         results[f'dice_{id2label[k]}'] = dice[i]
@@ -165,7 +181,7 @@ def evaluate_wsi_tiles(
     
     model.eval()
     model_class = get_model_class_from_model(model)
-    _, _, post_process_output, _, _ = get_model_funcs(model)
+    # _, _, post_process_output, _, _ = get_model_funcs(model)
     dataset = TileDataset(
         list_of_masks=annotations_paths,
         wsi_root=wsi_root,
@@ -197,9 +213,11 @@ def evaluate_wsi_tiles(
             filename = batch["filename"]
             target_sizes = [(target.size(1), target.size(2)) for target in batch["mask_labels"]]
             batch = batch["original_segmentation_maps"]
-            predicted_segmentation_maps = post_process_output(outputs, target_sizes).cpu().squeeze().numpy()
+            predicted_segmentation_maps = post_process_output(outputs, target_sizes).cpu()
             unsqueeze_first = True if batch.shape[0] == 1 else False
             batch = batch.squeeze().unsqueeze(0).numpy() if unsqueeze_first else batch.squeeze().numpy()
+            unsqueeze_first = True if predicted_segmentation_maps.shape[0] == 1 else False
+            predicted_segmentation_maps = predicted_segmentation_maps.squeeze().unsqueeze(0).numpy() if unsqueeze_first else predicted_segmentation_maps.squeeze().numpy()
 
             for pred, true in zip(predicted_segmentation_maps, batch):
                 # account for ignored class, to avoid computing metrics on those pixels
@@ -209,8 +227,7 @@ def evaluate_wsi_tiles(
                 pred = cv2.erode(pred.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1)
                 pred = cv2.dilate(pred.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1)
 
-                dice, iou, mcc = get_multi_class_metrics(true, pred, categories_to_eval)
-
+                iou, dice, mcc = get_multi_class_metrics(true, pred, categories_to_eval)
                 dices.append(dice)
                 ious.append(iou)
                 mccs.append(mcc)
@@ -244,7 +261,8 @@ def infer_wsi(
         step_size:int, 
         crop_pred_edge:int, 
         resolution:float, 
-        downsample_factor:int=1) -> Tuple[np.ndarray, int, int, float, Tuple[int, int]]:
+        downsample_factor:int=1,
+        normalize_input:bool=True) -> Tuple[np.ndarray, int, int, float, Tuple[int, int], float, float]:
     """
     Perform inference on a whole slide image (WSI) using a Mask2Former model.
 
@@ -268,8 +286,9 @@ def infer_wsi(
         tuple: The origin coordinates of the WSI read.
 
     """
+    
     model.eval()
-    _, _, post_process_output, _, _ = get_model_funcs(model)
+    
     dataset = SlideDataset(
         wsi_path=wsi_path,
         filter_mask=filter_mask,
@@ -285,28 +304,54 @@ def infer_wsi(
         noise=False,
         blur=False,
         gamma=False)
-    
+    start_time = time.time()
+    times_tile = []
     num_tiles = len(dataset)
-    tile_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, pin_memory=True, drop_last=False, collate_fn=infer_collate_fn)
+    cpus_per_task = int(os.getenv("SLURM_CPUS_PER_TASK", 1))
+    print(f"Using {cpus_per_task} CPU cores for tile loading")
+    tile_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=cpus_per_task if cpus_per_task > 1 else 0,
+        pin_memory=True,
+        prefetch_factor=2 if cpus_per_task > 1 else None,
+        drop_last=False,
+        collate_fn=InferCollator(normalize=normalize_input)
+    )
+    # tile_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, pin_memory=True, drop_last=False, collate_fn=InferCollator(normalize=normalize_input))
     num_batches = (num_tiles + batch_size - 1) // batch_size
     with tqdm(total=num_batches, unit='Batch', desc="Batches", dynamic_ncols=True) as data_iterator:
-        for batch, coords, __ in tile_loader:
+        for batch, coords, augmentations in tile_loader:
+            start_time_batch = time.time()
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                outputs = model(pixel_values=batch.to(model.device))
-            target_sizes = [(t.shape[1], t.shape[2]) for t in batch]
-
-            # gather for prediction mask creation
-            outputs = post_process_output(outputs, target_sizes, return_logits=True).cpu()         
-            dataset.stitch_predictions(outputs, coords)
-            
+                target_sizes = [(t.shape[1], t.shape[2]) for t in batch]
+                batch = model(pixel_values=batch.to(model.device))
+                
+                # gather for prediction mask creation
+                batch = post_process_output(batch, target_sizes, return_logits=True)
+            # times_tile.append((time.time() - start_time_batch) / len(outputs))      
+                dataset.stitch_predictions(batch, coords, augmentations)
+                
             data_iterator.update(1)  # Update the progress bar 
-    pred_mask,__ = dataset.create_final_predictions(return_probs=False)
 
-    pred_mask = pred_mask[:dataset.original_shape[0], :dataset.original_shape[1]].astype(np.uint8) 
+            if data_iterator.n % 50 == 0:
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+    pred_mask,__ = dataset.create_final_predictions(return_probs=False)
+    # time_tile = np.mean(times_tile)
+    time_tile = 0
+    pred_mask = pred_mask[:dataset.original_shape[0]//dataset.tiling_downsample_factor, :dataset.original_shape[1]//dataset.tiling_downsample_factor].astype(np.uint8) 
     pred_mask *= cv2.resize(filter_mask, (pred_mask.shape[1], pred_mask.shape[0]), interpolation=cv2.INTER_NEAREST)
     level = dataset.level
     downsampling_level = dataset.level_downsampling
     exact_resolution = dataset.exact_resolution
     read_origin = dataset.read_origin
+    tiling_downsample_factor = dataset.tiling_downsample_factor
+    
     del dataset
-    return pred_mask, level, downsampling_level, exact_resolution, read_origin   
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return pred_mask, level, downsampling_level, exact_resolution, tiling_downsample_factor, read_origin, time.time() - start_time, time_tile

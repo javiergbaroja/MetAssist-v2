@@ -86,44 +86,44 @@ def create_img_processor(decoder_model:str, ignore_index:int=None) -> UNetImageP
 
 
 
-def custom_post_process_semantic_segmentation(outputs, target_sizes, return_logits:bool=False) -> torch.Tensor:
-    """
-    Custom post-processing function for semantic segmentation outputs.
+# def custom_post_process_semantic_segmentation(outputs, target_sizes, return_logits:bool=False) -> torch.Tensor:
+#     """
+#     Custom post-processing function for semantic segmentation outputs.
     
-    Args:
-        outputs: The model outputs.
-        target_sizes: The target sizes for resizing the outputs.
-        return_logits: If True, returns logits. If False, returns probabilities.
+#     Args:
+#         outputs: The model outputs.
+#         target_sizes: The target sizes for resizing the outputs.
+#         return_logits: If True, returns logits. If False, returns probabilities.
     
-    Returns:
-        A list of dictionaries containing the resized segmentation maps and logits.
-    """
-    if return_logits:
-        return outputs.preds
-    else:
-        return outputs.y_pred
+#     Returns:
+#         A list of dictionaries containing the resized segmentation maps and logits.
+#     """
+#     if return_logits:
+#         return outputs.preds
+#     else:
+#         return outputs.y_pred
     
     
-def post_process_output(outputs, target_sizes, return_logits=False):
-    """
-    Post-process the model outputs to create the final segmentation mask.
+# def post_process_output(outputs, target_sizes, return_logits=False):
+#     """
+#     Post-process the model outputs to create the final segmentation mask.
 
-    Args:
-        outputs: Model outputs.
-        target_sizes (list): List of target sizes.
-        return_logits (bool, optional): Whether to return the logits. Defaults to False.
+#     Args:
+#         outputs: Model outputs.
+#         target_sizes (list): List of target sizes.
+#         return_logits (bool, optional): Whether to return the logits. Defaults to False.
 
-    Returns:
-        torch.Tensor: The final segmentation mask.
-    """
-    outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
-    outputs = outputs.squeeze()
-    while len(outputs.shape) < 4:
-        outputs = outputs.unsqueeze(0)
-    # unsqueeze_first = True if len(outputs.shape) < 4 else False
-    # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
-    assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
-    return outputs.float()
+#     Returns:
+#         torch.Tensor: The final segmentation mask.
+#     """
+#     outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
+#     outputs = outputs.squeeze()
+#     while len(outputs.shape) < 4:
+#         outputs = outputs.unsqueeze(0)
+#     # unsqueeze_first = True if len(outputs.shape) < 4 else False
+#     # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
+#     assert len(outputs.shape) == 4, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+#     return outputs.float().cpu()
 
 class TrainCollator:
     def __init__(self, ignore_index:int):

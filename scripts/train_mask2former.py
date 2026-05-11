@@ -1,20 +1,18 @@
 import openslide
 
-from typing import Dict, Tuple, List
 import os
 import sys
 import random
 import argparse
 
 import numpy as np
-import pandas as pd
 import torch
 from sklearn.utils import check_random_state
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0,os.path.dirname(SCRIPT_DIR))
 
-from trainers.trainer_mask2former import TrainerMask2Former
+from engine.trainer_mask2former import TrainerMask2Former
 
 # set all seeds for reproducibility
 torch.manual_seed(42)

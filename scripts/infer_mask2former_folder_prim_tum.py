@@ -17,11 +17,12 @@ from scipy.ndimage import binary_fill_holes
 
 from models.model_io import create_mask2former_from_checkpoint
 from engine.inference import infer_wsi
-from utils.wsi import ACCEPTED_WSI_TYPES, detect_tissue_mask, prepare_read_from_slide
-from utils.io import get_file_list 
+from utils.wsi import ACCEPTED_WSI_TYPES
+from utils.io import get_file_list
 from utils.geometry import decode_geojson_to_mask, save_geojson_annotation, save_sparse_annotation
 from utils.hpc import combine_results, divide_list_slurm_array
 from utils.evaluation import get_slide_level_result
+
 
 def close_metastasis(pred_mask:np.ndarray, metastasis_class:int) -> np.ndarray:
     """
@@ -53,9 +54,11 @@ def process_args(args:argparse.Namespace) -> argparse.Namespace:
         args.wsi_path = [args.wsi_path.strip()]
     return args
 
-def merge_mucin_and_ln(ln_seg_file_all:np.ndarray, ln_class:int, mucin_class:int) -> np.ndarray:
+def merge_mucin_and_ln(ln_seg_file_all:np.ndarray, ln_class:int, deposit_class:int, mucin_class:int) -> np.ndarray:
 
     ln_mask = (ln_seg_file_all == ln_class).astype(np.uint8)
+    deposit_mask = (ln_seg_file_all == deposit_class).astype(np.uint8)
+    ln_mask |= deposit_mask  # merge deposit into LN
     if mucin_class not in ln_seg_file_all:
         return ln_seg_file_all, binary_fill_holes(ln_mask).astype(np.uint8)
     ln_dilated = cv2.dilate(ln_mask, np.ones((5, 5), np.uint8), iterations=1)
@@ -84,33 +87,19 @@ def main(args):
     wsi_files = natsorted([item for sublist in wsi_files for item in sublist])
     if args.wsi_list is not None:
         wsi_files = [wsi_file for wsi_file in wsi_files if os.path.basename(wsi_file) in args.wsi_list]
-    # remove duplicates (remove duplicate basenames, keep the first occurrence)
-    seen = set()
-    unique_wsi_files = []
-    for wsi_file in wsi_files:
-        basename = os.path.basename(wsi_file)
-        if basename not in seen:
-            unique_wsi_files.append(wsi_file)
-            seen.add(basename)
-    wsi_files = unique_wsi_files
-
+    ln_seg_files = get_file_list(args.ln_seg_path, 'geojson')
     assert len(wsi_files) > 0, 'No WSI files found'
+    assert len(ln_seg_files) > 0, 'No LN segmentation files found'
     assert os.path.exists(args.checkpoint_path), f'Checkpoint path {args.checkpoint_path} does not exist'
-
-    if args.ln_seg_path is not None:
-        ln_seg_files = get_file_list(args.ln_seg_path, 'geojson')
-        keep = []
-        for wsi_file in wsi_files:
-            wsi_name = os.path.splitext(os.path.basename(wsi_file))[0]
-            ln_seg_file_path = [ln for ln in ln_seg_files if wsi_name in ln]
-            if len(ln_seg_file_path) > 0:
-                keep.append(wsi_file)
-            else:
-                print(f'LN segmentation file for WSI {wsi_name} does not exist')
-        wsi_files = keep
-    else:
-        print("No tissue mask path provided, proceeding without LN segmentation files. Using tissue mask instead.")
-        ln_seg_file_path = None
+    keep = []
+    for wsi_file in wsi_files:
+        wsi_name = os.path.splitext(os.path.basename(wsi_file))[0]
+        ln_seg_file_path = [ln for ln in ln_seg_files if wsi_name in ln]
+        if len(ln_seg_file_path) > 0:
+            keep.append(wsi_file)
+        else:
+            print(f'LN segmentation file for WSI {wsi_name} does not exist')
+    wsi_files = keep
 
     wsi_files = divide_list_slurm_array(wsi_files)   
 
@@ -164,35 +153,38 @@ def main(args):
     times = []
     with tqdm(total=len(wsi_files)) as pbar:
         for wsi_file in wsi_files:
+            if not args.overwrite:
+                if args.prepare_sparse and not args.prepare_qupath and os.path.exists(os.path.join(args.output_dir, f'{os.path.splitext(os.path.basename(wsi_file))[0]}.npz')):
+                    print(f'Sparse output for {os.path.basename(wsi_file)} already exists, skipping')
+                    pbar.update(1)
+                    continue
+                elif args.prepare_qupath and not args.prepare_sparse and os.path.exists(os.path.join(args.output_dir, f'{os.path.splitext(os.path.basename(wsi_file))[0]}_metastasis.geojson')) and os.path.exists(os.path.join(args.output_dir, f'{os.path.splitext(os.path.basename(wsi_file))[0]}_ln.geojson')):
+                    print(f'QuPath output for {os.path.basename(wsi_file)} already exists, skipping')
+                    pbar.update(1)
+                    continue
+                elif args.prepare_sparse and args.prepare_qupath and os.path.exists(os.path.join(args.output_dir, f'{os.path.splitext(os.path.basename(wsi_file))[0]}.npz')) and os.path.exists(os.path.join(args.output_dir, f'{os.path.splitext(os.path.basename(wsi_file))[0]}_metastasis.geojson')) and os.path.exists(os.path.join(args.output_dir, f'{os.path.splitext(os.path.basename(wsi_file))[0]}_ln.geojson')):
+                    print(f'Both outputs for {os.path.basename(wsi_file)} already exist, skipping')
+                    pbar.update(1)
+                    continue
             pbar.update(1)
             # find corresponding LN segmentation file
             wsi_name = os.path.splitext(os.path.basename(wsi_file))[0]
-            if ln_seg_file_path is not None:
-                ln_seg_file_path = natsorted([ln for ln in ln_seg_files if wsi_name in ln])
-                ln_seg_file_path = ln_seg_file_path[0]
-                assert os.path.exists(ln_seg_file_path), f'LN segmentation file {ln_seg_file_path} does not exist'
+            ln_seg_file_path = natsorted([ln for ln in ln_seg_files if wsi_name in ln])
+            ln_seg_file_path = ln_seg_file_path[0]
 
             # Check arguments and paths
             assert args.step_size <= args.tile_size, 'Step size should be less than tile size'
             assert args.crop_pred_edge/2 <= (args.tile_size-args.step_size), 'Crop pred edge should be less or equal to half of the overlap of two adjacent tiles'
             assert os.path.exists(wsi_file), f'WSI file {wsi_file} does not exist'
-            
-            # try:
-            if ln_seg_file_path is None:
-                if args.infer_whole_slide:
-                    ln_seg_file, ln_seg_file_all = np.ones((5, 5), dtype=np.uint8), np.ones((5, 5), dtype=np.uint8)
-                else:
-                    level, level_downsampling, exact_resolution, tiling_downsample_factor, original_dim, read_origin = prepare_read_from_slide(wsi_file, resolution=args.resolution, file_type=os.path.splitext(wsi_file)[1].lower())
-                    ln_seg_file, __ = detect_tissue_mask(wsi_file)
-                    ln_seg_file_all = ln_seg_file.copy()
-            else:
+            assert os.path.exists(ln_seg_file_path), f'LN segmentation file {ln_seg_file_path} does not exist'
+            try:
                 ln_seg_file_all = decode_geojson_to_mask(ln_seg_file_path)
-                ln_seg_file_all, ln_seg_file = merge_mucin_and_ln(ln_seg_file_all, args.ln_class, args.mucin_class)
+                ln_seg_file_all, ln_seg_file = merge_mucin_and_ln(ln_seg_file_all, args.ln_class, args.deposit_class, args.mucin_class)
 
-            pred_mask, level, level_downsampling, exact_resolution, tiling_downsample_factor, read_origin, time, __ = infer_wsi(model, wsi_file, ln_seg_file, args.batch_size, args.tile_size, args.step_size, args.crop_pred_edge, args.resolution, downsample_factor)
-            # except Exception as e:
-            #     print(f'Error processing {wsi_name}: {e}')
-            #     continue
+                pred_mask, level, level_downsampling, exact_resolution, tiling_downsample_factor, read_origin, time, __ = infer_wsi(model, wsi_file, ln_seg_file, args.batch_size, args.tile_size, args.step_size, args.crop_pred_edge, args.resolution, downsample_factor)
+            except Exception as e:
+                print(f'Error processing {wsi_name}: {e}')
+                continue
             pred_mask = close_metastasis(pred_mask, args.label2id['Metastasis'])
             if args.prepare_sparse:
                 save_sparse_annotation(out_path=os.path.join(args.output_dir, f'{wsi_name}.npz'),
@@ -203,11 +195,10 @@ def main(args):
             
             if args.prepare_qupath:
                 save_geojson_annotation(out_path=os.path.join(args.output_dir, f'{wsi_name}_metastasis.geojson'),
-                                        mask=pred_mask,
+                                        mask=(pred_mask == args.label2id['Metastasis']).astype(np.uint8),
                                         level=level,
                                         level_downsampling=level_downsampling*tiling_downsample_factor,
-                                        category_dict={k: v for k, v in args.label2id.items() if k not in ['Background', 'Training region']})
-                
+                                        category_dict={'Metastasis': 1})
                 save_geojson_annotation(out_path=os.path.join(args.output_dir, f'{wsi_name}_ln.geojson'),
                                         mask=cv2.resize(ln_seg_file, (pred_mask.shape[1], pred_mask.shape[0]), interpolation=cv2.INTER_NEAREST),
                                         level=level,
@@ -247,7 +238,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Infer mask2former on WSI')
     parser.add_argument('--wsi_path', type=str, help='Path to input WSI folder')
     parser.add_argument('--ln_seg_path', type=str, help='Path to LN segmentation folder')
-    parser.add_argument('--infer_whole_slide', action='store_true', help='Whether to infer the whole slide or only the tissue regions')
     parser.add_argument('--output_dir', type=str, help='Output directory')
     parser.add_argument('--checkpoint_path', type=str, help='Path to model checkpoint')
     parser.add_argument('--encoder_model', type=str, help='Encoder model')
@@ -267,8 +257,7 @@ if __name__ == "__main__":
     parser.add_argument('--prepare_qupath', action='store_true', help='Prepare QuPath compatible output')
     parser.add_argument('--prepare_sparse', action='store_true', help='Prepare sparse output')
     parser.add_argument('--prepare_wsi_level_result_csv', action='store_true', help='Prepare WSI level')
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite existing outputs')
     args = parser.parse_args()
-    if args.ln_seg_path == "None":
-        args.ln_seg_path = None
 
     main(args)

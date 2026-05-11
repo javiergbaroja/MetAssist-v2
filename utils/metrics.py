@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-from sklearn.metrics import confusion_matrix
 from typing import List, Tuple
 
 def get_cm(gt:np.ndarray, pred:np.ndarray) -> Tuple[int, int, int, int]:

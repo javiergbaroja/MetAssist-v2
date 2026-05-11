@@ -13,8 +13,8 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.metrics import get_iou_multiclass
-from utils.models import create_mask2former_from_checkpoint, get_model_funcs, get_model_class_from_checkpoint
-from trainers.trainer_base import TrainerBase
+from models.model_io import create_mask2former_from_checkpoint, get_model_funcs, get_model_class_from_checkpoint, post_process_output
+from engine.trainer_base import TrainerBase
 
 
 
@@ -30,7 +30,7 @@ class TrainerMask2Former(TrainerBase):
         self.result_save_path = os.path.join(result_path_parent, f'fold_{args.fold}')
         self.initialize_paths()
         self.model_class = get_model_class_from_checkpoint(self.model_save_path)
-        _, create_model, self.post_process_output, _, self.train_collator = get_model_funcs(self.model_class)
+        _, create_model, self.train_collator = get_model_funcs(self.model_class)
         self.model = create_model(encoder_model=args.encoder_model, 
                                   decoder_model=args.decoder_model, 
                                   label2id=args.label2id, 
@@ -291,7 +291,7 @@ class TrainerMask2Former(TrainerBase):
         outputs = self.model(pixel_values=batch["pixel_values"]) if within_train_loop else self.model(pixel_values=batch["pixel_values"], mask_labels=[labels for labels in batch["mask_labels"]], class_labels=[labels for labels in batch["class_labels"]])
         batch = self.accelerator.gather_for_metrics(batch["original_segmentation_maps"][indices]).cpu()
 
-        predicted_segmentation_maps = self.post_process_output(outputs, target_sizes=target_sizes, return_logits=False)
+        predicted_segmentation_maps = post_process_output(outputs, target_sizes=target_sizes, return_logits=False)
         predicted_segmentation_maps = self.accelerator.gather_for_metrics(predicted_segmentation_maps).cpu().numpy()
         unsqueeze_first = True if batch.shape[0] == 1 else False
         batch = batch.squeeze().unsqueeze(0).numpy() if unsqueeze_first else batch.squeeze().numpy()

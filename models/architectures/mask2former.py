@@ -92,6 +92,12 @@ def create_model(encoder_model:str, decoder_model:str, label2id:Dict[str,int], i
     else:
         num_labels = len(label2id)
 
+    if 'Unannotated' in label2id:
+        training_region_id = label2id['Unannotated']
+        # Remove 'Training region' from label2id and id2label
+        del label2id['Unannotated']
+        del id2label[training_region_id]
+
     if dino_backbones[encoder_model] == 'hf-hub:paige-ai/Virchow2':
         model = create_virchow2_model(label2id, id2label, num_labels, out_indices)
         
@@ -111,7 +117,7 @@ def create_model(encoder_model:str, decoder_model:str, label2id:Dict[str,int], i
 
 def create_img_processor(decoder_model:str, ignore_index:int=None) -> Mask2FormerImageProcessor:
     if ignore_index is not None:
-        kwargs = {'ignore_index': ignore_index}
+        kwargs = {'ignore_index': ignore_index, 'do_reduce_labels': False}
     else:
         kwargs = {}
     preprocessor = AutoImageProcessor.from_pretrained(mask2former_cityscapes_semantic[decoder_model], 
@@ -120,93 +126,93 @@ def create_img_processor(decoder_model:str, ignore_index:int=None) -> Mask2Forme
     return preprocessor
 
 
-def custom_post_process_semantic_segmentation(
-        outputs, target_sizes: Optional[List[Tuple[int, int]]] = None, 
-        return_logits:bool=False
-    ) -> torch.Tensor:
-        """
-        Modified from the Hugging Face Mask2FormerImageProcessor class. Unlike the original function, this function supports extraction of probability mask.
-        See: https://github.com/huggingface/transformers/blob/52ea4aa589324bae43dfb1b6db70335da7b68654/src/transformers/models/mask2former/image_processing_mask2former.py#L352
-        Converts the output of [`Mask2FormerForUniversalSegmentation`] into semantic segmentation maps. Only supports
-        PyTorch.
+# def custom_post_process_semantic_segmentation(
+#         outputs, target_sizes: Optional[List[Tuple[int, int]]] = None, 
+#         return_logits:bool=False
+#     ) -> torch.Tensor:
+#         """
+#         Modified from the Hugging Face Mask2FormerImageProcessor class. Unlike the original function, this function supports extraction of probability mask.
+#         See: https://github.com/huggingface/transformers/blob/52ea4aa589324bae43dfb1b6db70335da7b68654/src/transformers/models/mask2former/image_processing_mask2former.py#L352
+#         Converts the output of [`Mask2FormerForUniversalSegmentation`] into semantic segmentation maps. Only supports
+#         PyTorch.
 
-        Args:
-            outputs ([`Mask2FormerForUniversalSegmentation`]):
-                Raw outputs of the model.
-            target_sizes (`List[Tuple[int, int]]`, *optional*):
-                List of length (batch_size), where each list item (`Tuple[int, int]]`) corresponds to the requested
-                final size (height, width) of each prediction. If left to None, predictions will not be resized.
-        Returns:
-            `List[torch.Tensor]`:
-                A list of length `batch_size`, where each item is a semantic segmentation map of shape (height, width)
-                corresponding to the target_sizes entry (if `target_sizes` is specified). Each entry of each
-                `torch.Tensor` correspond to a semantic class id.
-        """
-        class_queries_logits = outputs.class_queries_logits  # [batch_size, num_queries, num_classes+1]
-        masks_queries_logits = outputs.masks_queries_logits  # [batch_size, num_queries, height, width]
+#         Args:
+#             outputs ([`Mask2FormerForUniversalSegmentation`]):
+#                 Raw outputs of the model.
+#             target_sizes (`List[Tuple[int, int]]`, *optional*):
+#                 List of length (batch_size), where each list item (`Tuple[int, int]]`) corresponds to the requested
+#                 final size (height, width) of each prediction. If left to None, predictions will not be resized.
+#         Returns:
+#             `List[torch.Tensor]`:
+#                 A list of length `batch_size`, where each item is a semantic segmentation map of shape (height, width)
+#                 corresponding to the target_sizes entry (if `target_sizes` is specified). Each entry of each
+#                 `torch.Tensor` correspond to a semantic class id.
+#         """
+#         class_queries_logits = outputs.class_queries_logits  # [batch_size, num_queries, num_classes+1]
+#         masks_queries_logits = outputs.masks_queries_logits  # [batch_size, num_queries, height, width]
 
-        # Scale back to preprocessed image size - (384, 384) for all models
-        masks_queries_logits = torch.nn.functional.interpolate(
-            masks_queries_logits, size=(384, 384), mode="bilinear", align_corners=False
-        )
+#         # Scale back to preprocessed image size - (384, 384) for all models
+#         masks_queries_logits = torch.nn.functional.interpolate(
+#             masks_queries_logits, size=(384, 384), mode="bilinear", align_corners=False
+#         )
 
-        # Remove the null class `[..., :-1]`
-        masks_classes = class_queries_logits.softmax(dim=-1)[..., :-1]
-        masks_probs = masks_queries_logits.sigmoid()  # [batch_size, num_queries, height, width]
+#         # Remove the null class `[..., :-1]`
+#         masks_classes = class_queries_logits.softmax(dim=-1)[..., :-1]
+#         masks_probs = masks_queries_logits.sigmoid()  # [batch_size, num_queries, height, width]
 
-        # Semantic segmentation logits of shape (batch_size, num_classes, height, width)
-        segmentation = torch.einsum("bqc, bqhw -> bchw", masks_classes, masks_probs)
-        batch_size = class_queries_logits.shape[0]
+#         # Semantic segmentation logits of shape (batch_size, num_classes, height, width)
+#         segmentation = torch.einsum("bqc, bqhw -> bchw", masks_classes, masks_probs)
+#         batch_size = class_queries_logits.shape[0]
 
-        # Resize logits and compute semantic segmentation maps
-        if target_sizes is not None:
-            if batch_size != len(target_sizes):
-                raise ValueError(
-                    "Make sure that you pass in as many target sizes as the batch dimension of the logits"
-                )
+#         # Resize logits and compute semantic segmentation maps
+#         if target_sizes is not None:
+#             if batch_size != len(target_sizes):
+#                 raise ValueError(
+#                     "Make sure that you pass in as many target sizes as the batch dimension of the logits"
+#                 )
 
-            semantic_segmentation = []
-            for idx in range(batch_size):
-                resized_logits = torch.nn.functional.interpolate(
-                    segmentation[idx].unsqueeze(dim=0), size=target_sizes[idx], mode="bilinear", align_corners=False
-                )
-                if not return_logits:
-                    semantic_segmentation.append(resized_logits[0].argmax(dim=0))
-                else:
-                    semantic_segmentation.append(resized_logits[0])
-        else:
-            raise ValueError("Please provide target sizes for resizing the logits")
+#             semantic_segmentation = []
+#             for idx in range(batch_size):
+#                 resized_logits = torch.nn.functional.interpolate(
+#                     segmentation[idx].unsqueeze(dim=0), size=target_sizes[idx], mode="bilinear", align_corners=False
+#                 )
+#                 if not return_logits:
+#                     semantic_segmentation.append(resized_logits[0].argmax(dim=0))
+#                 else:
+#                     semantic_segmentation.append(resized_logits[0])
+#         else:
+#             raise ValueError("Please provide target sizes for resizing the logits")
 
-        return semantic_segmentation
+#         return semantic_segmentation
 
 
-def post_process_output(outputs, target_sizes, return_logits=False):
-    """
-    Post-process the model outputs to create the final segmentation mask.
+# def post_process_output(outputs, target_sizes, return_logits=False):
+#     """
+#     Post-process the model outputs to create the final segmentation mask.
 
-    Args:
-        outputs: Model outputs.
-        target_sizes (list): List of target sizes.
-        return_logits (bool, optional): Whether to return the logits. Defaults to False.
+#     Args:
+#         outputs: Model outputs.
+#         target_sizes (list): List of target sizes.
+#         return_logits (bool, optional): Whether to return the logits. Defaults to False.
 
-    Returns:
-        torch.Tensor: The final segmentation mask.
-    """
-    if return_logits:
-        final_shape = 4
-    else:
-        final_shape = 3
-    outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
-    outputs = torch.stack(outputs).squeeze()
-    while len(outputs.shape) < final_shape:
-        outputs = outputs.unsqueeze(0)
-    # unsqueeze_first = True if len(outputs.shape) < 4 else False
-    # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
-    if return_logits:
-        assert len(outputs.shape) == final_shape, f"Expected 4D tensor (BCHW), got {outputs.shape}"
-    else:
-        assert len(outputs.shape) == final_shape, f"Expected 3D tensor (BHW), got {outputs.shape}"
-    return outputs.float()
+#     Returns:
+#         torch.Tensor: The final segmentation mask.
+#     """
+#     if return_logits:
+#         final_shape = 4
+#     else:
+#         final_shape = 3
+#     outputs = custom_post_process_semantic_segmentation(outputs, target_sizes=target_sizes, return_logits=return_logits)
+#     outputs = torch.stack(outputs).squeeze()
+#     while len(outputs.shape) < final_shape:
+#         outputs = outputs.unsqueeze(0)
+#     # unsqueeze_first = True if len(outputs.shape) < 4 else False
+#     # outputs = outputs.unsqueeze(0) if unsqueeze_first else outputs
+#     if return_logits:
+#         assert len(outputs.shape) == final_shape, f"Expected 4D tensor (BCHW), got {outputs.shape}"
+#     else:
+#         assert len(outputs.shape) == final_shape, f"Expected 3D tensor (BHW), got {outputs.shape}"
+#     return outputs.float()
 
 
 class TrainCollator:

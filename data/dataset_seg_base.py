@@ -4,6 +4,7 @@ import os
 from typing import Dict, List, Tuple, Union, Optional
 from glob import glob
 import random
+import geojson
 
 # image processing and array manipulation
 import numpy as np
@@ -17,10 +18,10 @@ from torchvision import transforms
 from torchvision.transforms import functional as F
 
 # utils
-from utils.augmentations import identity_transformation, apply_pil_brightness_augmentation, apply_pil_hsv_augmentation, apply_pil_hed_augmentation, apply_pil_additive_noise, apply_pil_gaussian_blur, apply_pil_gamma_correction
-from utils.augmentations import TestTimeAugmentation
-from utils.data import extract_tile_coords, prepare_read_from_slide
-from utils.utils import ACCEPTED_WSI_TYPES, check_wsi_exists_all_formats
+from data.augmentations import identity_transformation, apply_pil_brightness_augmentation, apply_pil_hsv_augmentation, apply_pil_hed_augmentation, apply_pil_additive_noise, apply_pil_gaussian_blur, apply_pil_gamma_correction
+from data.augmentations import TestTimeAugmentation
+from utils.wsi import ACCEPTED_WSI_TYPES, check_wsi_exists_all_formats, prepare_read_from_slide
+from data.tiling import extract_tile_coords_new
 
 class BaseSlideDataset():
     """
@@ -74,7 +75,14 @@ class BaseSlideDataset():
         self.tile_size = tile_size
         self.step_size = step_size
         self._prepare_slide(wsi_path, resolution)
-        self.coords = extract_tile_coords(self.wsi, filter_mask, self.original_shape, self.padded_shape, self.tile_size, self.step_size, self.read_origin, self.level, self.level_downsampling)
+        self.coords = extract_tile_coords_new(slide=self.wsi, 
+                                          filter_mask=filter_mask, 
+                                          img_dim=self.original_shape, 
+                                          img_dim_padded=self.padded_shape, 
+                                          tile_size=self.tile_size*self.tiling_downsample_factor, 
+                                          step_size=self.step_size*self.tiling_downsample_factor, 
+                                          read_origin=self.read_origin, 
+                                          level=self.level)
         self.num_augs = len(rotations) * (len(flips)+1) if apply_tta else 1
         # update coords according to num_augs. Each coord should be repeated num_augs times
 
@@ -95,7 +103,16 @@ class BaseSlideDataset():
         self.prepare_augmentation_series()
         self.wsi_pred = torch.empty(1)
         self.count_map = torch.empty(1)
-        self.crop_size = crop_size if crop_size <= ((tile_size-step_size)//2) else ((tile_size-step_size)//2)
+        # self.crop_size = crop_size if crop_size <= ((tile_size-step_size)//2) else ((tile_size-step_size)//2)
+        max_crop = max((tile_size - step_size) // 2, 0)
+        if step_size >= tile_size and crop_size > 0:
+            import warnings
+            warnings.warn(
+                f"crop_size={crop_size} requested but step_size={step_size} >= tile_size={tile_size} "
+                f"means there is no overlap between tiles. Setting crop_size to 0.",
+                UserWarning
+            )
+        self.crop_size = min(crop_size, max_crop)
 
 
     def _prepare_slide(self, wsi_path:str, resolution:float):
@@ -108,14 +125,13 @@ class BaseSlideDataset():
 
         # get level from mpp
         self.wsi = openslide.open_slide(wsi_path)
-        self.level, self.level_downsampling, self.exact_resolution, self.original_shape, self.read_origin = prepare_read_from_slide(self.wsi, resolution, file_type=os.path.splitext(wsi_path)[1])
-
+        self.level, self.level_downsampling, self.exact_resolution, self.tiling_downsample_factor, self.original_shape, self.read_origin = prepare_read_from_slide(self.wsi, resolution, file_type=os.path.splitext(wsi_path)[1])
         # if slide cannot contain an integer value of tile_size, pad it by mirror reflection at the end of the image
         pad_x, pad_y = 0, 0
-        if self.original_shape[0] % self.tile_size != 0:
-            pad_x = self.tile_size - self.original_shape[0] % self.tile_size
-        if self.original_shape[1] % self.tile_size != 0:
-            pad_y = self.tile_size - self.original_shape[1] % self.tile_size
+        if self.original_shape[0] % self.tile_size*self.tiling_downsample_factor != 0:
+            pad_x = self.tile_size*self.tiling_downsample_factor - self.original_shape[0] % self.tile_size*self.tiling_downsample_factor
+        if self.original_shape[1] % self.tile_size*self.tiling_downsample_factor != 0:
+            pad_y = self.tile_size*self.tiling_downsample_factor - self.original_shape[1] % self.tile_size*self.tiling_downsample_factor
 
         self.padded_shape = self.original_shape[0] + pad_x, self.original_shape[1] + pad_y
 
@@ -126,27 +142,36 @@ class BaseSlideDataset():
         Finalize the prediction by normalizing aggregated probabilities and creating the segmentation map.
         """
         # Avoid division by zero in areas without any tile coverage
-        self.count_map = torch.clamp(self.count_map, min=1.0)
-
+        self.count_map = torch.clamp(self.count_map, min=1.0).unsqueeze(0).half()
+        self.wsi_pred = self.wsi_pred.half()
         # Normalize the logits by the number of overlaps to get averaged logits
-        averaged_probs = self.wsi_pred / self.count_map.unsqueeze(0).float()
+        self.wsi_pred /= self.count_map
+        
 
         # Get the final segmentation map by taking the argmax over the class dimension
-        # final_prediction = torch.argmax(averaged_probs, dim=0).cpu().numpy().astype(np.uint8)
-        final_prediction = np.zeros((self.padded_shape[0], self.padded_shape[1]), dtype=np.uint8)
+        final_prediction = np.zeros((self.padded_shape[0]//self.tiling_downsample_factor, self.padded_shape[1]//self.tiling_downsample_factor), dtype=np.uint8)
         # tile averaged_probs to fill final_prediction
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        for row_start, row_end, col_start, col_end in self.coords:
-            if row_end > final_prediction.shape[0]:
-                row_end = final_prediction.shape[0]
-            if col_end > final_prediction.shape[1]:
-                col_end = final_prediction.shape[1]
-            final_prediction[row_start:row_end, col_start:col_end] = averaged_probs[:, row_start:row_end, col_start:col_end].to(device).argmax(dim=0).cpu().numpy().astype(np.uint8)
+        # for row_start, row_end, col_start, col_end in self.coords:
+        #     row_start, col_start, row_end, col_end = row_start // self.tiling_downsample_factor, col_start // self.tiling_downsample_factor, row_end // self.tiling_downsample_factor, col_end // self.tiling_downsample_factor
+        #     if row_end > final_prediction.shape[0]:
+        #         row_end = final_prediction.shape[0]
+        #     if col_end > final_prediction.shape[1]:
+        #         col_end = final_prediction.shape[1]
+        #     final_prediction[row_start:row_end, col_start:col_end] = self.wsi_pred[:, row_start:row_end, col_start:col_end].to(device).argmax(dim=0).cpu().numpy().astype(np.uint8)
+
+        block_size = self.tile_size
+        for row_start in range(0, final_prediction.shape[0], block_size):
+            for col_start in range(0, final_prediction.shape[1], block_size):
+                row_end = min(row_start + block_size, final_prediction.shape[0])
+                col_end = min(col_start + block_size, final_prediction.shape[1])
+                final_prediction[row_start:row_end, col_start:col_end] = \
+                    self.wsi_pred[:, row_start:row_end, col_start:col_end].argmax(dim=0).numpy().astype(np.uint8)
 
         if return_probs:
-            return final_prediction, averaged_probs.cpu().numpy()
-
+            return final_prediction, self.wsi_pred.cpu().numpy()
+        self.wsi_pred = torch.empty(1)
         return final_prediction, None
     
 
@@ -172,43 +197,44 @@ class BaseSlideDataset():
         return np.array(gt_mask_tiles)
     
 
-    def stitch_predictions(self, tile_predictions:torch.Tensor, coords:List[Tuple[int, int, int, int]]) -> torch.Tensor:
+    def stitch_predictions(self, tile_predictions:torch.Tensor, augmentations:List[Optional[TestTimeAugmentation]], coords:List[Tuple[int, int, int, int]]) -> torch.Tensor:
         """
         Stitch predictions from tiles into the final whole-slide image prediction.
         Crops predictions by self.crop_size during aggregation to reduce boundary artifacts.
         """
         if len(self.wsi_pred ) == 1:
             # make a downsampled copy of the WSI for the final prediction
-            downsampled_size = (self.padded_shape[0] // self.downsample_factor, self.padded_shape[1] // self.downsample_factor)
+            downsampled_size = (self.padded_shape[0] // self.tiling_downsample_factor, self.padded_shape[1] // self.tiling_downsample_factor)
             self.wsi_pred = torch.zeros((tile_predictions.shape[1], *downsampled_size), dtype=torch.float32)
             self.count_map = torch.zeros(downsampled_size, dtype=torch.uint8)
-        tile_predictions = torch.nn.functional.interpolate(tile_predictions, scale_factor=1/self.downsample_factor, mode='bilinear', align_corners=False)
+        # tile_predictions = torch.nn.functional.interpolate(tile_predictions, scale_factor=1/self.downsample_factor, mode='bilinear', align_corners=False)
 
         # Add tile logits to the final logits tensor, and count overlapping tiles per pixel
-        crop_size = self.crop_size // self.downsample_factor
-        for pred_logits, (row_start, __, col_start, __) in zip(tile_predictions, coords):
+        crop_size = self.crop_size 
+        for pred_logits, (row_start, __, col_start, __), augmentation in zip(tile_predictions, coords, augmentations):
             # Crop edges of the tile predictions accounting for edges (cannot do center crop if tile touches the image edge)
             crop_start_row, crop_end_row, crop_start_col, crop_end_col = crop_size, -crop_size, crop_size, -crop_size
-            row_start, col_start = row_start // self.downsample_factor, col_start // self.downsample_factor
+            row_start, col_start = row_start // self.tiling_downsample_factor, col_start // self.tiling_downsample_factor
             row_end, col_end = row_start + pred_logits.shape[1], col_start + pred_logits.shape[2]
             if row_start != 0: # if not at top edge, crop the top
-                row_start += self.crop_size 
+                row_start += crop_size 
             else:
                 crop_start_row = 0
-            if row_end != self.padded_shape[0]:
-                row_end -= self.crop_size
+            if row_end != self.padded_shape[0] // self.tiling_downsample_factor:
+                row_end -= crop_size
             else:
-                crop_end_row = pred_logits.shape[1] // self.downsample_factor
+                crop_end_row = pred_logits.shape[1] 
             if col_start != 0:
-                col_start += self.crop_size 
+                col_start += crop_size 
             else:
                 crop_start_col = 0
-            if col_end != self.padded_shape[1]:
-                col_end -= self.crop_size 
+            if col_end != self.padded_shape[1] // self.tiling_downsample_factor:
+                col_end -= crop_size 
             else:
-                crop_end_col = pred_logits.shape[2] // self.downsample_factor
+                crop_end_col = pred_logits.shape[2] 
                 
             cropped_pred_logits = pred_logits[:, crop_start_row:crop_end_row, crop_start_col:crop_end_col]
+            cropped_pred_logits = augmentation.reverse(cropped_pred_logits.unsqueeze(0)).squeeze(0) if augmentation is not None else cropped_pred_logits
 
             # Add cropped logits to the final logits tensor
             self.wsi_pred[:, row_start:row_end, col_start:col_end] += cropped_pred_logits.softmax(dim=0)
@@ -223,7 +249,9 @@ class BaseSlideDataset():
         tile_size = (coord[3] - coord[2]), (coord[1] - coord[0])
 
         newLocation = (int(int(self.read_origin[0])+coord[2]*self.level_downsampling),int(int(self.read_origin[1])+coord[0]*self.level_downsampling))
-        tile = np.array(self.wsi.read_region(newLocation, self.level, tile_size))
+        tile = np.array(self.wsi.read_region(newLocation, self.level, tile_size*self.tiling_downsample_factor))
+        tile = cv2.resize(tile, (self.tile_size, self.tile_size), interpolation=cv2.INTER_LINEAR)
+
         if tile.shape[2] == 4:
             tile[:, :, 3] = 255
             tile = cv2.cvtColor(tile, cv2.COLOR_RGBA2RGB)
@@ -295,14 +323,14 @@ class BaseTileDataset(Dataset):
         self.set_data_augs(data_augs)
         self.set_current_process()
         self.get_level_from_mpp()
-        if not infer_mode:
-            self.get_weights_and_coords()
+        # if not infer_mode:
+        #     self.get_weights_and_coords()
 
     def _get_wsi_roots(self, wsi_root:Union[str, List[str]]) -> List[str]:
         if isinstance(wsi_root, str):
-            wsi_root = glob(wsi_root)
+            wsi_root = glob(wsi_root, recursive=True)
         elif isinstance(wsi_root, list):
-            wsi_root = [glob(wsi) for wsi in wsi_root]
+            wsi_root = [glob(wsi, recursive=True) for wsi in wsi_root]
             wsi_root = [item for sublist in wsi_root for item in sublist]
 
         have_wsi = [any([len(glob(os.path.join(wsi, f'*.{ext}'))) > 0 for ext in ACCEPTED_WSI_TYPES]) for wsi in wsi_root]
@@ -381,7 +409,8 @@ class BaseTileDataset(Dataset):
             self.printf(f"Warning: Input resolution of {self.resolution} mpp is not available for selected WSI level ({self.level}). Using {self.working_resolution} mpp instead.")
     
     def _get_wsi(self, filename:str, return_openslide:bool=True) -> Union[openslide.OpenSlide, openslide.ImageSlide]:
-        __, wsi_path = check_wsi_exists_all_formats(filename, self.wsi_root)
+        wsi_exists, wsi_path = check_wsi_exists_all_formats(filename, self.wsi_root)
+        assert wsi_exists, f"WSI file {filename} not found in {self.wsi_root}. Please check the path."
         return openslide.open_slide(wsi_path) if return_openslide else wsi_path
 
     def _get_wsi_path(self, filename:str) -> str:
@@ -428,6 +457,10 @@ class BaseTileDataset(Dataset):
 
         return image, mask     
 
+    def _load_geojson(self, path_to_geojson:str) -> dict:
+        with open(path_to_geojson) as f:
+            data = geojson.load(f)
+        return data
     
     def __len__(self):
         return len(self.indices)  

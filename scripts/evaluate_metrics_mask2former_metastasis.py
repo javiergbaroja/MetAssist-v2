@@ -42,10 +42,12 @@ import zarr
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from utils.models import create_mask2former_from_checkpoint
-from utils.utils import divide_list_slurm_array, COLORMAP, get_ann_files, check_wsi_exists_all_formats, combine_results
-from utils.inference import evaluate_wsi_tiles, infer_tiles
-
+from models.model_io import create_mask2former_from_checkpoint
+from engine.inference import evaluate_wsi_tiles, infer_tiles
+from utils.hpc import divide_list_slurm_array,  combine_results
+from utils.visualization import COLORMAP
+from utils.wsi import check_wsi_exists_all_formats
+from utils.io import get_ann_files
 
 def load_annontations(file_paths:List[str]) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     rgbs = []

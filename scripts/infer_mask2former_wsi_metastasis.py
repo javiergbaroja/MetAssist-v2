@@ -10,9 +10,10 @@ import cv2
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0,os.path.dirname(SCRIPT_DIR))
 
-from utils.models import create_mask2former_from_checkpoint
-from utils.utils import  save_geojson_annotation, save_sparse_annotation, get_slide_level_result, decode_geojson_to_mask
-from utils.inference import infer_wsi
+from models.model_io import create_mask2former_from_checkpoint
+from engine.inference import infer_wsi
+from utils.geometry import decode_geojson_to_mask, save_geojson_annotation, save_sparse_annotation
+from utils.evaluation import get_slide_level_result
 
 def main(args):
     downsample_factor = 1
@@ -36,7 +37,7 @@ def main(args):
 
     # Load model
     model = create_mask2former_from_checkpoint(checkpoint_path=args.checkpoint_path, label2id=args.label2id, encoder_name=args.encoder_model, decoder_model=args.decoder_model, out_indices=args.feature_layers)
-    pred_mask, level, level_downsampling, read_origin = infer_wsi(model, args.wsi_path, ln_seg_file, args.batch_size, args.tile_size, args.step_size, args.crop_pred_edge, args.resolution, downsample_factor)
+    pred_mask, level, level_downsampling, read_origin,__,__ = infer_wsi(model, args.wsi_path, ln_seg_file, args.batch_size, args.tile_size, args.step_size, args.crop_pred_edge, args.resolution, downsample_factor)
 
     if args.prepare_sparse:
         save_sparse_annotation(out_path=os.path.join(args.output_dir, f'{wsi_name}.npz'),
